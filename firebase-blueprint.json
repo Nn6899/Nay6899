@@ -1,0 +1,213 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile containing authentication metadata and role",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The unique user ID corresponding to Firebase Auth UID"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Email address of the user"
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Full name of the user"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["TEACHER", "STUDENT"],
+          "description": "Access control role"
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Profile picture URL"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp ISO string"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp ISO string"
+        }
+      },
+      "required": ["id", "email", "displayName", "role", "createdAt", "updatedAt"]
+    },
+    "Exam": {
+      "title": "Exam",
+      "description": "Online examination created and managed by a teacher",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the exam"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Title of the quiz/exam"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Instructions or description"
+        },
+        "teacherId": {
+          "type": "string",
+          "description": "Owner teacher UID"
+        },
+        "teacherName": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Teacher display name"
+        },
+        "durationMinutes": {
+          "type": "number",
+          "description": "Exam duration in minutes"
+        },
+        "totalQuestions": {
+          "type": "number",
+          "description": "Number of questions"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["DRAFT", "PUBLISHED", "CLOSED"],
+          "description": "Lifecycle status of the exam"
+        },
+        "accessCode": {
+          "type": "string",
+          "maxLength": 20,
+          "description": "Optional pin/code to enter exam"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp ISO string"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp ISO string"
+        }
+      },
+      "required": ["id", "title", "teacherId", "durationMinutes", "status", "createdAt", "updatedAt"]
+    },
+    "QuizTest": {
+      "title": "QuizTest",
+      "description": "Online test entity managed by teacher with detailed rules and configurations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string", "maxLength": 250 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "teacherId": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "duration": { "type": "number" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED", "ACTIVE", "CLOSED", "ARCHIVED"] },
+        "startTime": { "type": ["string", "null"] },
+        "endTime": { "type": ["string", "null"] },
+        "publicCode": { "type": "string", "maxLength": 32 },
+        "allowStudentViewScore": { "type": "boolean" },
+        "allowStudentViewAnswers": { "type": "boolean" },
+        "allowStudentViewSolutions": { "type": "boolean" },
+        "randomizeQuestions": { "type": "boolean" },
+        "randomizeOptions": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "teacherId", "duration", "status", "publicCode", "createdAt", "updatedAt"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Quiz question item with LaTeX formulas and validation status",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "testId": { "type": "string" },
+        "questionNumber": { "type": "number" },
+        "type": { "type": "string", "enum": ["multiple_choice", "true_false", "short_answer"] },
+        "content": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "correctAnswer": { "type": ["string", "array"] },
+        "explanation": { "type": "string" },
+        "points": { "type": "number" },
+        "validationStatus": { "type": "string", "enum": ["VALID", "NEEDS_REVIEW"] }
+      },
+      "required": ["id", "questionNumber", "type", "content", "options"]
+    },
+    "TestImport": {
+      "title": "TestImport",
+      "description": "Metadata record of imported test file (.tex, .docx, .pdf)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "testId": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileSize": { "type": "number" },
+        "fileType": { "type": "string", "enum": ["tex", "docx", "pdf"] },
+        "uploadedAt": { "type": "string" },
+        "totalParsed": { "type": "number" },
+        "validCount": { "type": "number" },
+        "needsReviewCount": { "type": "number" }
+      },
+      "required": ["id", "testId", "teacherId", "fileName", "fileSize", "fileType", "uploadedAt"]
+    },
+    "TestAttempt": {
+      "title": "TestAttempt",
+      "description": "Student quiz attempt session recording answers, timestamps, and grading results",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "testId": { "type": "string" },
+        "testPublicCode": { "type": "string" },
+        "studentName": { "type": "string" },
+        "studentId": { "type": "string" },
+        "startedAt": { "type": "string" },
+        "expiresAt": { "type": "string" },
+        "durationMinutes": { "type": "number" },
+        "status": { "type": "string", "enum": ["IN_PROGRESS", "SUBMITTED", "EXPIRED"] },
+        "answers": { "type": "object" },
+        "markedForReview": { "type": "array", "items": { "type": "string" } },
+        "lastSavedAt": { "type": "string" },
+        "submittedAt": { "type": "string" },
+        "score": { "type": "number" },
+        "maxScore": { "type": "number" },
+        "correctCount": { "type": "number" },
+        "totalQuestions": { "type": "number" }
+      },
+      "required": ["id", "testId", "testPublicCode", "studentName", "startedAt", "expiresAt", "durationMinutes", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Stores user profiles with role-based attributes"
+    },
+    "/exams/{examId}": {
+      "schema": "Exam",
+      "description": "Stores exams created by teachers"
+    },
+    "/tests/{testId}": {
+      "schema": "QuizTest",
+      "description": "Online tests collection with teacher ownership and security controls"
+    },
+    "/tests/{testId}/questions/{questionId}": {
+      "schema": "Question",
+      "description": "Questions subcollection under each quiz test"
+    },
+    "/tests/{testId}/imports/{importId}": {
+      "schema": "TestImport",
+      "description": "File import history and metadata records"
+    },
+    "/tests/{testId}/attempts/{attemptId}": {
+      "schema": "TestAttempt",
+      "description": "Student attempts and submissions for a quiz test"
+    }
+  }
+}
+

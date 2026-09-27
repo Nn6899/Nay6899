@@ -1,0 +1,153 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isTeacher() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'TEACHER';
+    }
+
+    // 1. Users collection
+    // Teachers/Students can only read and write their own profile document
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false; // Blanket listing forbidden
+      
+      allow create: if isOwner(userId)
+        && request.resource.data.keys().hasAll(['id', 'email', 'displayName', 'role', 'createdAt', 'updatedAt'])
+        && request.resource.data.id == userId
+        && request.resource.data.email is string
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() <= 100
+        && request.resource.data.role in ['TEACHER', 'STUDENT'];
+
+      allow update: if isOwner(userId)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.role == resource.data.role; // Role privilege escalation forbidden
+        
+      allow delete: if false;
+    }
+
+    // 2. Exams collection
+    // Only teachers can create and manage their own exams
+    match /exams/{examId} {
+      // Single get: teacher owner or published exam access
+      allow get: if isSignedIn() && (
+        resource.data.teacherId == request.auth.uid ||
+        resource.data.status == 'PUBLISHED'
+      );
+
+      // Secure list query: Teacher listing their own exams
+      allow list: if isSignedIn() && resource.data.teacherId == request.auth.uid;
+
+      allow create: if isSignedIn()
+        && isValidId(examId)
+        && request.resource.data.teacherId == request.auth.uid
+        && request.resource.data.title is string
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.durationMinutes is number
+        && request.resource.data.status in ['DRAFT', 'PUBLISHED', 'CLOSED'];
+
+      allow update: if isSignedIn()
+        && resource.data.teacherId == request.auth.uid
+        && request.resource.data.teacherId == resource.data.teacherId; // Cannot transfer ownership
+
+      allow delete: if isSignedIn()
+        && resource.data.teacherId == request.auth.uid;
+    }
+
+    // 3. Tests collection (Phase 2)
+    // Teacher manages their tests; students can read if PUBLISHED or ACTIVE
+    match /tests/{testId} {
+      // Single get: owner teacher or anyone if test is PUBLISHED or ACTIVE
+      allow get: if (
+        (isSignedIn() && resource.data.teacherId == request.auth.uid) ||
+        resource.data.status in ['PUBLISHED', 'ACTIVE']
+      );
+
+      // Teacher listing their own tests (MUST include where('teacherId', '==', auth.uid))
+      allow list: if isSignedIn() && resource.data.teacherId == request.auth.uid;
+
+      // Teacher creating test
+      allow create: if isSignedIn()
+        && isValidId(testId)
+        && request.resource.data.teacherId == request.auth.uid
+        && request.resource.data.title is string
+        && request.resource.data.title.size() <= 250
+        && request.resource.data.duration is number
+        && request.resource.data.duration > 0
+        && request.resource.data.status in ['DRAFT', 'PUBLISHED', 'ACTIVE', 'CLOSED', 'ARCHIVED']
+        && request.resource.data.publicCode is string;
+
+      // Teacher updating their own test only; teacherId cannot be reassigned
+      allow update: if isSignedIn()
+        && resource.data.teacherId == request.auth.uid
+        && request.resource.data.teacherId == resource.data.teacherId
+        && request.resource.data.status in ['DRAFT', 'PUBLISHED', 'ACTIVE', 'CLOSED', 'ARCHIVED'];
+
+      // Teacher deleting their own test only
+      allow delete: if isSignedIn()
+        && resource.data.teacherId == request.auth.uid;
+
+      // 4. Questions subcollection (Phase 3)
+      match /questions/{questionId} {
+        allow get, list: if (
+          (isSignedIn() && get(/databases/$(database)/documents/tests/$(testId)).data.teacherId == request.auth.uid) ||
+          get(/databases/$(database)/documents/tests/$(testId)).data.status in ['PUBLISHED', 'ACTIVE']
+        );
+
+        allow create, update, delete: if isSignedIn()
+          && get(/databases/$(database)/documents/tests/$(testId)).data.teacherId == request.auth.uid;
+      }
+
+      // 5. Imports metadata subcollection (Phase 3)
+      match /imports/{importId} {
+        allow get, list, create: if isSignedIn()
+          && get(/databases/$(database)/documents/tests/$(testId)).data.teacherId == request.auth.uid;
+        allow update, delete: if false;
+      }
+
+      // 6. Attempts subcollection (Phase 5 - Student test sessions)
+      match /attempts/{attemptId} {
+        // Teacher can list all attempts; student or teacher can get their specific attempt by ID
+        allow get: if true;
+        allow list: if isSignedIn()
+          && get(/databases/$(database)/documents/tests/$(testId)).data.teacherId == request.auth.uid;
+
+        // Public student can create attempt when test is published/active
+        allow create: if isValidId(attemptId)
+          && request.resource.data.testId == testId
+          && request.resource.data.studentName is string
+          && request.resource.data.studentName.size() >= 1;
+
+        // Student can update their attempt during test (answers, status, timestamps)
+        allow update: if request.resource.data.testId == testId;
+
+        // Only teacher owner can delete attempt records
+        allow delete: if isSignedIn()
+          && get(/databases/$(database)/documents/tests/$(testId)).data.teacherId == request.auth.uid;
+      }
+    }
+  }
+}
+

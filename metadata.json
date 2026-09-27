@@ -1,0 +1,6 @@
+{
+  "name": "Thi Trắc Nghiệm Trực Tuyến",
+  "description": "Nền tảng thi trắc nghiệm trực tuyến cho giáo viên và học sinh với hỗ trợ LaTeX, chấm điểm tự động và quản lý kỳ thi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
