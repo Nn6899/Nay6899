@@ -6,6 +6,7 @@ const ALLOWED_EXTENSIONS: Record<string, SupportedFileFormat> = {
   tex: 'tex',
   docx: 'docx',
   pdf: 'pdf',
+  txt: 'txt',
 };
 
 const MAGIC_BYTES = {
@@ -98,7 +99,7 @@ export async function validateImportFile(file: File | { name: string; size: numb
           error: 'Tệp không phải là định dạng Word .docx hợp lệ (chữ ký tệp nén OpenXML không đúng).',
         };
       }
-    } else if (detectedFormat === 'tex') {
+    } else if (detectedFormat === 'tex' || detectedFormat === 'txt') {
       // Check for binary/null bytes to ensure it's plain text
       let hasNullByte = false;
       const sampleSize = Math.min(bytes.length, 512);
@@ -112,11 +113,11 @@ export async function validateImportFile(file: File | { name: string; size: numb
       if (hasNullByte) {
         return {
           isValid: false,
-          fileType: 'tex',
+          fileType: detectedFormat,
           fileName,
           fileSize,
           mimeType,
-          error: 'Tệp .tex chứa ký tự nhị phân không hợp lệ. Vui lòng lưu tệp với mã hóa văn bản UTF-8.',
+          error: `Tệp .${detectedFormat} chứa ký tự nhị phân không hợp lệ. Vui lòng lưu tệp với mã hóa văn bản UTF-8.`,
         };
       }
     }

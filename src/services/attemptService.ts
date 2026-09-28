@@ -491,6 +491,7 @@ export const attemptService = {
         studentAnswer: rawStudentAnswer ?? null,
         correctAnswer: q.correctAnswer,
         isCorrect,
+        points: scoreAwarded,
         scoreAwarded,
         maxPoints: questionMaxPoints,
         explanation: q.explanation,
@@ -502,21 +503,30 @@ export const attemptService = {
     const finalScore = Number(totalScore.toFixed(2));
     const scorePercentage = maxScore > 0 ? Number(((finalScore / maxScore) * 100).toFixed(1)) : 0;
 
+    const wrongCount = Math.max(0, answeredCount - correctCount);
+    const blankCount = Math.max(0, rawQuestions.length - answeredCount);
+
     const gradeResult: AttemptGradeResult = {
       attemptId,
       testId,
       studentName: attempt.studentName,
       studentId: attempt.studentId,
       submittedAt,
+      startedAt: attempt.startedAt || submittedAt,
       score: finalScore,
+      totalPoints: Number(maxScore.toFixed(2)),
       maxScore: Number(maxScore.toFixed(2)),
       scorePercentage,
       correctCount,
+      wrongCount,
+      blankCount,
       totalQuestions: rawQuestions.length,
+      duration: 'Hoàn thành',
       answersSummary: {
         answered: answeredCount,
-        unanswered: rawQuestions.length - answeredCount,
+        unanswered: blankCount,
       },
+      questionResults: detailedResults,
       detailedResults,
     };
 

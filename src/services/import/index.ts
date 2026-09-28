@@ -3,6 +3,7 @@ import { validateImportFile } from './fileValidator';
 import { parseLatexExam } from './latexParser';
 import { parseDocxExam } from './docxParser';
 import { parsePdfExam } from './pdfParser';
+import { parseTextExam } from './textParser';
 import { extractQuestionsWithAi } from '../document-ai/question-extractor';
 
 export * from './fileValidator';
@@ -10,6 +11,9 @@ export * from './questionValidator';
 export * from './latexParser';
 export * from './docxParser';
 export * from './pdfParser';
+export * from './textParser';
+export * from './questionSplitter';
+export * from './mathtypeConverter';
 export { extractQuestionsWithAi };
 
 /**
@@ -49,8 +53,13 @@ export async function importExamFromFile(
     const text = decoder.decode(buffer);
     result = parseLatexExam(text, validation.fileName);
   } else if (validation.fileType === 'docx') {
-    onProgress?.('Đang trích xuất nội dung văn bản Word...', 70);
+    onProgress?.('Đang trích xuất nội dung Word & chuyển đổi công thức MathType sang LaTeX...', 70);
     result = await parseDocxExam(buffer, validation.fileName);
+  } else if (validation.fileType === 'txt') {
+    onProgress?.('Đang đọc tệp văn bản và phân tách câu hỏi...', 70);
+    const decoder = new TextDecoder('utf-8');
+    const text = decoder.decode(buffer);
+    result = parseTextExam(text, validation.fileName);
   } else if (validation.fileType === 'pdf') {
     onProgress?.('Đang quét các trang PDF và kiểm tra lớp văn bản số...', 70);
     result = await parsePdfExam(buffer, validation.fileName);

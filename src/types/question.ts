@@ -38,7 +38,7 @@ export interface ExamValidationResult {
   errors: ValidationErrorItem[];
 }
 
-export type SupportedFileFormat = 'tex' | 'docx' | 'pdf';
+export type SupportedFileFormat = 'tex' | 'docx' | 'pdf' | 'txt';
 
 export interface FileValidationResult {
   isValid: boolean;

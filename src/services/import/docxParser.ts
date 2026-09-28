@@ -1,35 +1,55 @@
 import mammoth from 'mammoth';
 import { Question, ParseResult } from '../../types/question';
-import { applyValidationToQuestion } from './questionValidator';
+import { extractDocxTextWithLatex } from './docxXmlExtractor';
+import { splitTextIntoQuestionBlocks, parseQuestionBlocksToQuestions } from './questionSplitter';
+import { extractMathTypeLatexFromText, replaceUnicodeMathSymbols } from './mathtypeConverter';
 
 /**
  * Parses DOCX ArrayBuffer into structured Question array.
+ * Supports MathType formulas, OMML equations, and question patterns:
+ * - "Câu x.", "Câu x:", "câu x.", "câu x:"
+ * - "Bài x.", "Bài x:", "bài x.", "bài x:"
+ * - Preserves all mathematical formulas as valid LaTeX ($...$ / $$...$$).
  */
 export async function parseDocxExam(buffer: ArrayBuffer, fileName = 'exam.docx'): Promise<ParseResult> {
   const warnings: string[] = [];
-  const questions: Question[] = [];
-
   let rawText = '';
-  let htmlText = '';
+  let formulasConverted = 0;
 
+  // 1. Primary High-Fidelity Extraction via direct OpenXML ZIP inspection (word/document.xml)
   try {
-    const [rawRes, htmlRes] = await Promise.all([
-      mammoth.extractRawText({ arrayBuffer: buffer }),
-      mammoth.convertToHtml({ arrayBuffer: buffer }),
-    ]);
-    rawText = rawRes.value;
-    htmlText = htmlRes.value;
+    const xmlResult = await extractDocxTextWithLatex(buffer);
+    if (xmlResult && xmlResult.text && xmlResult.text.trim().length > 0) {
+      rawText = xmlResult.text;
+      formulasConverted = xmlResult.mathFormulaCount;
+      if (formulasConverted > 0) {
+        warnings.push(`Hệ thống đã tự động nhận diện và chuyển đổi ${formulasConverted} công thức MathType/OMML sang định dạng chuẩn LaTeX.`);
+      }
+    }
   } catch (err: any) {
-    return {
-      success: false,
-      fileType: 'docx',
-      fileName,
-      questions: [],
-      warnings: [`Lỗi khi giải nén và đọc file Word (.docx): ${err.message || 'Tệp có thể bị hỏng'}`],
-      totalParsed: 0,
-      validCount: 0,
-      needsReviewCount: 0,
-    };
+    console.warn('Direct OpenXML extraction failed, falling back to Mammoth:', err);
+  }
+
+  // 2. Fallback to Mammoth if direct XML extraction did not produce text
+  if (!rawText || rawText.trim().length === 0) {
+    try {
+      const rawRes = await mammoth.extractRawText({ arrayBuffer: buffer });
+      let extracted = rawRes.value || '';
+      extracted = extractMathTypeLatexFromText(extracted);
+      extracted = replaceUnicodeMathSymbols(extracted);
+      rawText = extracted;
+    } catch (err: any) {
+      return {
+        success: false,
+        fileType: 'docx',
+        fileName,
+        questions: [],
+        warnings: [`Lỗi khi giải nén và đọc file Word (.docx): ${err.message || 'Tệp có thể bị hỏng'}`],
+        totalParsed: 0,
+        validCount: 0,
+        needsReviewCount: 0,
+      };
+    }
   }
 
   if (!rawText || rawText.trim().length === 0) {
@@ -45,14 +65,26 @@ export async function parseDocxExam(buffer: ArrayBuffer, fileName = 'exam.docx')
     };
   }
 
-  // 1. Check for Answer Key Table at the bottom (e.g. "BẢNG ĐÁP ÁN" or "ĐÁP ÁN")
+  // 3. Check for Answer Key Table (BẢNG ĐÁP ÁN, ĐÁP ÁN TRẮC NGHIỆM)
   const answerKeyMap = new Map<number, string>();
-  const answerKeyRegex = /(?:BẢNG\s+ĐÁP\s+ÁN|ĐÁP\s+ÁN\s+TRẮC\s+NGHIỆM|BẢNG\s+TRẢ\s+LỜI)([\s\S]*)$/i;
-  const answerKeyMatch = rawText.match(answerKeyRegex);
+  const answerKeyHeaderRegex = /(?:BẢNG\s+ĐÁP\s+ÁN|ĐÁP\s+ÁN\s+TRẮC\s+NGHIỆM|BẢNG\s+TRẢ\s+LỜI)/i;
+  const headerMatch = rawText.match(answerKeyHeaderRegex);
 
-  if (answerKeyMatch) {
-    const keySection = answerKeyMatch[1];
-    // Match pairs like "1.A", "1 - B", "1: C", "1 A"
+  let parsingBody = rawText;
+
+  if (headerMatch && headerMatch.index !== undefined) {
+    const afterHeader = rawText.slice(headerMatch.index + headerMatch[0].length);
+    const nextQuestionMatch = afterHeader.match(/(?:^|\n)\s*(?:Câu|câu|Bài|bài)\s*([0-9]+|[IVXLCDMivxlcdm]+)[\.:\-\s]/i);
+
+    let keySection = '';
+    if (nextQuestionMatch && nextQuestionMatch.index !== undefined) {
+      keySection = afterHeader.slice(0, nextQuestionMatch.index);
+      parsingBody = rawText.slice(0, headerMatch.index) + '\n' + afterHeader.slice(nextQuestionMatch.index);
+    } else {
+      keySection = afterHeader;
+      parsingBody = rawText.slice(0, headerMatch.index);
+    }
+
     const pairRegex = /(\d+)\s*[\.\-:\s]\s*([A-D])/gi;
     let keyPairMatch: RegExpExecArray | null;
     while ((keyPairMatch = pairRegex.exec(keySection)) !== null) {
@@ -60,135 +92,21 @@ export async function parseDocxExam(buffer: ArrayBuffer, fileName = 'exam.docx')
       const ansChar = keyPairMatch[2].toUpperCase();
       answerKeyMap.set(qIndex, ansChar);
     }
+    if (answerKeyMap.size > 0) {
+      warnings.push(`Đã tìm thấy bảng đáp án với ${answerKeyMap.size} đáp án.`);
+    }
   }
 
-  // Strip answer key section from questions parsing body to avoid false positives
-  const parsingBody = answerKeyMatch
-    ? rawText.slice(0, answerKeyMatch.index)
-    : rawText;
+  // 4. Split into question blocks using the comprehensive question splitter:
+  // "Câu x.", "Câu x:", "câu x.", "câu x:", "Bài x.", "Bài x:", "bài x.", "bài x:"
+  const questionBlocks = splitTextIntoQuestionBlocks(parsingBody);
 
-  // 2. Split into question blocks by "Câu 1", "Câu 2", "Bài 1", etc.
-  const questionMarkerRegex = /(?:^|\n)\s*(?:Câu|Bài)\s*(\d+)[\.:\-\s]/gi;
-  const markers = Array.from(parsingBody.matchAll(questionMarkerRegex));
-
-  const questionBlocks: { qNum: number; text: string }[] = [];
-
-  if (markers.length > 0) {
-    for (let i = 0; i < markers.length; i++) {
-      const currentMarker = markers[i];
-      const qNum = parseInt(currentMarker[1], 10) || i + 1;
-      const startIndex = (currentMarker.index || 0) + currentMarker[0].length;
-      const endIndex = i < markers.length - 1 ? markers[i + 1].index : parsingBody.length;
-      const blockText = parsingBody.slice(startIndex, endIndex).trim();
-
-      questionBlocks.push({ qNum, text: blockText });
-    }
-  } else {
-    // Fallback: If no "Câu" marker, attempt splitting by double newlines or single block
-    warnings.push('Không nhận diện được từ khóa "Câu 1.", "Câu 2." trong tệp Word. Hệ thống đã đưa nội dung vào chế độ kiểm duyệt.');
-    questionBlocks.push({ qNum: 1, text: parsingBody.trim() });
+  if (questionBlocks.length === 1 && questionBlocks[0].qNum === 1 && questionBlocks[0].rawText === parsingBody.trim()) {
+    warnings.push('Không nhận diện được từ khóa câu hỏi như "Câu 1.", "Câu 1:", "Bài 1.", "Bài 1:". Vui lòng kiểm tra lại cấu trúc văn bản.');
   }
 
-  // 3. Process each question block
-  let indexCounter = 1;
-  for (const block of questionBlocks) {
-    const qNum = block.qNum || indexCounter;
-    let currentText = block.text;
-    let explanation = '';
-
-    // A. Check for explanation: "Lời giải:", "Hướng dẫn giải:"
-    const explMatch = currentText.match(/(?:Lời\s+giải|Hướng\s+dẫn\s+giải|Giải\s+chi\s+tiết)[\.:\s]([\s\S]*)$/i);
-    if (explMatch && explMatch.index !== undefined) {
-      explanation = explMatch[1].trim();
-      currentText = currentText.slice(0, explMatch.index).trim();
-    }
-
-    // B. Check for True/False format (a), b), c), d) or a., b., c., d.)
-    const tfOptionRegex = /(?:^|\n)\s*([a-d])[\)\.]\s*([\s\S]*?)(?=(?:\n\s*[a-d][\)\.]|$))/gi;
-    const tfMatches = Array.from(currentText.matchAll(tfOptionRegex));
-
-    // C. Check for Multiple Choice format (A., B., C., D. or A), B), C), D))
-    const mcOptionRegex = /(?:^|\n|\s{2,})([A-D])[\.\)]\s*([\s\S]*?)(?=(?:[A-D][\.\)]|$))/g;
-    const mcMatches = Array.from(currentText.matchAll(mcOptionRegex));
-
-    let type: Question['type'] = 'multiple_choice';
-    const options: string[] = [];
-    let correctAnswer: string | boolean[] | string[] = answerKeyMap.get(qNum) || '';
-    let content = currentText;
-
-    if (tfMatches.length >= 3) {
-      type = 'true_false';
-      const firstTfIndex = currentText.search(/(?:^|\n)\s*[a-d][\)\.]/i);
-      if (firstTfIndex > 0) {
-        content = currentText.slice(0, firstTfIndex).trim();
-      }
-
-      const tfAnswers: boolean[] = [];
-      tfMatches.forEach(m => {
-        let optText = m[2].trim();
-        // Check if marked with (Đúng), (Đ), *, (Sai), (S)
-        const isTrue = /\((?:Đúng|Đ)\)|\*/i.test(optText);
-        optText = optText.replace(/\((?:Đúng|Sai|Đ|S)\)|\*/gi, '').trim();
-        options.push(optText);
-        tfAnswers.push(isTrue);
-      });
-
-      if (!correctAnswer) {
-        correctAnswer = tfAnswers;
-      }
-    } else if (mcMatches.length >= 2) {
-      type = 'multiple_choice';
-      const firstMcIndex = currentText.search(/(?:^|\n|\s{2,})[A-D][\.\)]/);
-      if (firstMcIndex > 0) {
-        content = currentText.slice(0, firstMcIndex).trim();
-      }
-
-      let detectedLetter = '';
-      mcMatches.forEach(m => {
-        const letter = m[1].toUpperCase();
-        let optText = m[2].trim();
-
-        // Check if marked as correct with * or [Đúng]
-        if (/\*|\((?:Đúng|Đ)\)/i.test(optText) && !detectedLetter) {
-          detectedLetter = letter;
-        }
-
-        optText = optText.replace(/\*|\((?:Đúng|Sai|Đ|S)\)/gi, '').trim();
-        options.push(optText);
-      });
-
-      if (!correctAnswer && detectedLetter) {
-        correctAnswer = detectedLetter;
-      }
-    } else {
-      // Could be short answer or ambiguous
-      const shortAnsMatch = currentText.match(/(?:Đáp\s+án|Đáp\s+số|Kết\s+quả)[\.:\s]\s*([^\n]+)/i);
-      if (shortAnsMatch) {
-        type = 'short_answer';
-        correctAnswer = shortAnsMatch[1].trim();
-        content = currentText.replace(shortAnsMatch[0], '').trim();
-      } else {
-        // Ambiguous question
-        warnings.push(`Câu ${qNum}: Không tìm thấy đủ 4 phương án A, B, C, D rõ ràng.`);
-      }
-    }
-
-    const rawQuestion: Question = {
-      id: `q_docx_${Date.now()}_${indexCounter}`,
-      questionNumber: qNum,
-      type,
-      content: content.trim(),
-      options,
-      correctAnswer,
-      explanation: explanation || undefined,
-      points: 1,
-      rawText: block.text,
-    };
-
-    const validatedQ = applyValidationToQuestion(rawQuestion);
-    questions.push(validatedQ);
-    indexCounter++;
-  }
+  // 5. Parse blocks into structured Question objects
+  const questions: Question[] = parseQuestionBlocksToQuestions(questionBlocks, answerKeyMap);
 
   const validCount = questions.filter(q => q.validationStatus === 'VALID').length;
   const needsReviewCount = questions.length - validCount;

@@ -1,5 +1,7 @@
 import { Question, ParseResult } from '../../types/question';
 import { applyValidationToQuestion } from './questionValidator';
+import { splitTextIntoQuestionBlocks } from './questionSplitter';
+import { extractMathTypeLatexFromText } from './mathtypeConverter';
 
 /**
  * Extracts balanced curly braces content starting at index where char is '{'.
@@ -115,21 +117,15 @@ export function parseLatexExam(rawTex: string, fileName = 'exam.tex'): ParseResu
     rawBlocks.push(match[2].trim());
   }
 
-  // Fallback: If no \begin{ex} environments found, attempt split by "Câu \d+" or "\textbf{Câu \d+}"
+  // Fallback: If no \begin{ex} environments found, split by "Câu x.", "Câu x:", "Bài x.", "Bài x:"
   if (rawBlocks.length === 0) {
-    const splitRegex = /(?:^|\n)(?:\\textbf\{)?(?:Câu|Bài)\s*\d+[\.:\s]/gi;
-    const matches = Array.from(text.matchAll(splitRegex));
+    // Also clean any MathType comments and clean \textbf tags
+    const cleanedText = extractMathTypeLatexFromText(text).replace(/\\textbf\{((?:Câu|câu|Bài|bài)\s*[^}]+)\}/gi, '$1');
+    const blocks = splitTextIntoQuestionBlocks(cleanedText);
 
-    if (matches.length > 0) {
-      for (let i = 0; i < matches.length; i++) {
-        const start = (matches[i].index || 0) + matches[i][0].length;
-        const end = i < matches.length - 1 ? matches[i + 1].index : text.length;
-        const block = text.slice(start, end).trim();
-        if (block) {
-          rawBlocks.push(block);
-        }
-      }
-      warnings.push(`Không tìm thấy cấu trúc \\begin{ex}...\\end{ex}. Đã phân tách đề theo từ khóa 'Câu/Bài' (${rawBlocks.length} mục).`);
+    if (blocks.length > 0 && !(blocks.length === 1 && blocks[0].rawText === cleanedText.trim() && !cleanedText.includes('Câu') && !cleanedText.includes('Bài'))) {
+      blocks.forEach(b => rawBlocks.push(b.rawText));
+      warnings.push(`Không tìm thấy cấu trúc \\begin{ex}...\\end{ex}. Đã phân tách đề theo từ khóa 'Câu x.', 'Câu x:', 'Bài x.', 'Bài x:' (${rawBlocks.length} mục).`);
     } else {
       // Entire text might be a single question or custom format
       warnings.push('Không nhận diện được cấu trúc câu hỏi LaTeX chuẩn (ví dụ \\begin{ex}...\\end{ex} hoặc Câu 1:). Vui lòng kiểm tra lại cấu trúc file.');

@@ -35,6 +35,7 @@ export interface ResultQuestionItem {
   studentAnswer: StudentAnswerValue;
   isCorrect: boolean;
   points: number; // Score points awarded
+  scoreAwarded?: number; // Alias for points
   // Optional enriched fields for student review
   questionNumber?: number;
   type?: QuestionType;

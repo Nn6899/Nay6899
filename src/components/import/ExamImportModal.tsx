@@ -13,9 +13,12 @@ import {
   Eye,
   FileCode,
   FileCheck,
+  ClipboardList,
+  Code2,
+  Sigma,
 } from 'lucide-react';
 import { Question, ParseResult } from '../../types/question';
-import { importExamFromFile } from '../../services/import';
+import { importExamFromFile, parseTextExam } from '../../services/import';
 import { extractQuestionsWithAi } from '../../services/document-ai/question-extractor';
 import { questionService } from '../../services/questionService';
 import { QuestionEditModal } from './QuestionEditModal';
@@ -30,6 +33,7 @@ interface ExamImportModalProps {
 }
 
 type Step = 'UPLOAD' | 'PROCESSING' | 'REVIEW';
+type InputMode = 'FILE' | 'PASTE';
 
 export const ExamImportModal: React.FC<ExamImportModalProps> = ({
   testId,
@@ -39,8 +43,13 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
   onSuccess,
 }) => {
   const [currentStep, setCurrentStep] = useState<Step>('UPLOAD');
+  const [inputMode, setInputMode] = useState<InputMode>('FILE');
   const [dragActive, setDragActive] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [pastedText, setPastedText] = useState('');
+
+  // Formula rendering toggle: KaTeX preview vs raw LaTeX code
+  const [showRawLatex, setShowRawLatex] = useState(false);
 
   // Progress state
   const [progressPercent, setProgressPercent] = useState(0);
@@ -65,13 +74,16 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
 
   const resetAll = () => {
     setCurrentStep('UPLOAD');
+    setInputMode('FILE');
     setSelectedFile(null);
+    setPastedText('');
     setProgressPercent(0);
     setProgressMessage('');
     setParseResult(null);
     setQuestions([]);
     setErrorMessage(null);
     setIsAiProcessing(false);
+    setShowRawLatex(false);
   };
 
   const handleDrag = (e: React.DragEvent) => {
@@ -104,7 +116,7 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
     setErrorMessage(null);
     setCurrentStep('PROCESSING');
     setProgressPercent(10);
-    setProgressMessage('Đang khởi tạo tiến trình kiểm tra tệp...');
+    setProgressMessage('Đang khởi tạo tiến trình đọc tệp và phân tích công thức...');
 
     try {
       const result = await importExamFromFile(file, (msg, pct) => {
@@ -125,23 +137,52 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
     }
   };
 
+  // Pasted text submission
+  const handlePastedTextSubmit = () => {
+    if (!pastedText.trim()) {
+      setErrorMessage('Vui lòng dán nội dung đề thi trước khi bóc tách.');
+      return;
+    }
+
+    setErrorMessage(null);
+    setCurrentStep('PROCESSING');
+    setProgressPercent(40);
+    setProgressMessage('Đang nhận diện công thức MathType và phân tách câu hỏi...');
+
+    try {
+      const result = parseTextExam(pastedText, 'van_ban_de_thi.txt');
+      setProgressPercent(100);
+      setParseResult(result);
+      setQuestions(result.questions);
+      setCurrentStep('REVIEW');
+
+      if (!result.success && result.questions.length === 0) {
+        setErrorMessage(result.warnings.join(' '));
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Lỗi khi xử lý văn bản đề thi.');
+      setCurrentStep('UPLOAD');
+    }
+  };
+
   // AI re-extraction handler for scanned PDFs or complex documents
   const handleAiExtraction = async () => {
-    if (!selectedFile) return;
+    if (!selectedFile && !pastedText) return;
     setIsAiProcessing(true);
     setErrorMessage(null);
 
     try {
       let content = parseResult?.rawTextSample || '';
       if (!content && selectedFile) {
-        // Read text from file
         const textDecoder = new TextDecoder('utf-8');
         const buf = await selectedFile.arrayBuffer();
         content = textDecoder.decode(buf).slice(0, 10000);
+      } else if (!content && pastedText) {
+        content = pastedText.slice(0, 10000);
       }
 
       const aiRes = await extractQuestionsWithAi(content, {
-        fileName: selectedFile.name,
+        fileName: selectedFile?.name || 'pasted_exam.txt',
       });
 
       if (aiRes.questions.length > 0) {
@@ -185,7 +226,7 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
     const needsReview = questions.filter(q => q.validationStatus === 'NEEDS_REVIEW');
     if (needsReview.length > 0) {
       const confirmSave = window.confirm(
-        `Hiện có ${needsReview.length} câu hỏi chưa hoàn thiện (Cần xem lại). Bạn có muốn tiếp tục lưu? Học sinh sẽ không thể làm các câu hỏi bị lỗi cho đến khi bạn sửa lại.`
+        `Hiện có ${needsReview.length} câu hỏi chưa hoàn thiện (Cần xem lại). Bạn có muốn tiếp tục lưu? Bạn có thể chỉnh sửa lại sau trong trình soạn thảo.`
       );
       if (!confirmSave) return;
     }
@@ -196,12 +237,12 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
       const saved = await questionService.saveQuestions(testId, questions, teacherId);
 
       // 2. Record import metadata
-      if (selectedFile && parseResult) {
+      if (parseResult) {
         await questionService.recordImportMetadata(testId, {
           testId,
           teacherId,
-          fileName: selectedFile.name,
-          fileSize: selectedFile.size,
+          fileName: selectedFile?.name || 'van_ban_nhap_truc_tiep.txt',
+          fileSize: selectedFile?.size || pastedText.length,
           fileType: (parseResult.fileType as any) || 'docx',
           uploadedAt: new Date().toISOString(),
           totalParsed: questions.length,
@@ -240,9 +281,9 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
               <UploadCloud className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-900">Nhập Đề Thi Tự Động</h2>
+              <h2 className="text-base font-bold text-slate-900">Nhập Đề Thi & Chuyển Đổi MathType</h2>
               <p className="text-xs text-slate-500">
-                Hỗ trợ tệp LaTeX (.tex), Word (.docx) và PDF với chuẩn công thức toán học
+                Tự động tách câu hỏi (Câu x., Câu x:, Bài x., Bài x:) và chuyển đổi công thức MathType sang LaTeX
               </p>
             </div>
           </div>
@@ -271,7 +312,7 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
               1
             </span>
             <span className={currentStep === 'UPLOAD' ? 'font-bold text-slate-900' : 'text-slate-500'}>
-              Tải Lên Tệp
+              Tải Lên / Dán Đề Thi
             </span>
           </div>
 
@@ -290,7 +331,7 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
               2
             </span>
             <span className={currentStep === 'PROCESSING' ? 'font-bold text-slate-900' : 'text-slate-500'}>
-              Bóc Tách & Phân Tích
+              Chuyển MathType & Tách Câu
             </span>
           </div>
 
@@ -307,7 +348,7 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
               3
             </span>
             <span className={currentStep === 'REVIEW' ? 'font-bold text-slate-900' : 'text-slate-500'}>
-              Kiểm Duyệt & Lưu
+              Kiểm Duyệt Công Thức & Lưu
             </span>
           </div>
         </div>
@@ -319,80 +360,168 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
             <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-3 text-xs text-rose-800 animate-in fade-in">
               <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
               <div className="flex-1">
-                <span className="font-semibold block mb-0.5">Lỗi xử lý tệp:</span>
+                <span className="font-semibold block mb-0.5">Thông báo:</span>
                 <p>{errorMessage}</p>
               </div>
             </div>
           )}
 
-          {/* STEP 1: UPLOAD */}
+          {/* STEP 1: UPLOAD OR PASTE TEXT */}
           {currentStep === 'UPLOAD' && (
-            <div className="space-y-6">
-              <div
-                onDragEnter={handleDrag}
-                onDragLeave={handleDrag}
-                onDragOver={handleDrag}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-                className={`border-2 border-dashed rounded-2xl p-8 sm:p-12 text-center cursor-pointer transition-all flex flex-col items-center justify-center ${
-                  dragActive
-                    ? 'border-blue-500 bg-blue-50/50 scale-[0.99]'
-                    : 'border-slate-200 hover:border-blue-400 bg-slate-50/50 hover:bg-slate-50'
-                }`}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".tex,.docx,.pdf"
-                  onChange={handleFileInputChange}
-                  className="hidden"
-                />
-
-                <div className="w-16 h-16 rounded-2xl bg-blue-100/60 text-blue-600 flex items-center justify-center mb-4">
-                  <UploadCloud className="w-8 h-8" />
-                </div>
-
-                <h3 className="text-sm sm:text-base font-bold text-slate-800">
-                  Kéo thả file đề thi vào đây, hoặc <span className="text-blue-600 hover:underline">duyệt tệp</span>
-                </h3>
-                <p className="text-xs text-slate-500 mt-1.5 max-w-sm">
-                  Hệ thống hỗ trợ file .tex (LaTeX chuẩn), file .docx (Microsoft Word) và file .pdf (tài liệu số). Dung lượng tối đa 15MB.
-                </p>
-
-                {/* File type badges */}
-                <div className="flex flex-wrap items-center justify-center gap-3 mt-6">
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 shadow-2xs">
-                    <FileCode className="w-3.5 h-3.5 text-blue-600" />
-                    LaTeX (.tex)
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 shadow-2xs">
-                    <FileText className="w-3.5 h-3.5 text-indigo-600" />
-                    Word (.docx)
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 shadow-2xs">
-                    <FileCheck className="w-3.5 h-3.5 text-rose-600" />
-                    PDF (.pdf)
-                  </span>
-                </div>
+            <div className="space-y-5">
+              {/* Mode Switcher: File upload vs Paste text */}
+              <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl w-fit">
+                <button
+                  type="button"
+                  onClick={() => setInputMode('FILE')}
+                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    inputMode === 'FILE'
+                      ? 'bg-white text-blue-700 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <UploadCloud className="w-3.5 h-3.5" />
+                  <span>Tải Tệp Đề Thi (.docx, .tex, .txt, .pdf)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInputMode('PASTE')}
+                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    inputMode === 'PASTE'
+                      ? 'bg-white text-blue-700 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <ClipboardList className="w-3.5 h-3.5" />
+                  <span>Dán Trực Tiếp Văn Bản Đề Thi</span>
+                </button>
               </div>
 
-              {/* Security & Pipeline Information */}
-              <div className="bg-slate-50 rounded-xl p-4 border border-slate-200/80 text-xs text-slate-600 space-y-2">
-                <div className="font-semibold text-slate-800 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  <span>Quy trình bảo mật và kiểm duyệt đề thi:</span>
+              {inputMode === 'FILE' ? (
+                <div
+                  onDragEnter={handleDrag}
+                  onDragLeave={handleDrag}
+                  onDragOver={handleDrag}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-2xl p-8 sm:p-12 text-center cursor-pointer transition-all flex flex-col items-center justify-center ${
+                    dragActive
+                      ? 'border-blue-500 bg-blue-50/50 scale-[0.99]'
+                      : 'border-slate-200 hover:border-blue-400 bg-slate-50/50 hover:bg-slate-50'
+                  }`}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".docx,.tex,.txt,.pdf"
+                    onChange={handleFileInputChange}
+                    className="hidden"
+                  />
+
+                  <div className="w-16 h-16 rounded-2xl bg-blue-100/60 text-blue-600 flex items-center justify-center mb-4">
+                    <UploadCloud className="w-8 h-8" />
+                  </div>
+
+                  <h3 className="text-sm sm:text-base font-bold text-slate-800">
+                    Kéo thả file đề thi vào đây, hoặc <span className="text-blue-600 hover:underline">duyệt tệp từ máy tính</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1.5 max-w-md">
+                    Hỗ trợ Word (.docx) chứa công thức MathType/OMML, LaTeX (.tex), Văn bản (.txt), và PDF (.pdf). Tự động chuyển đổi công thức sang mã LaTeX chuẩn.
+                  </p>
+
+                  {/* File type badges */}
+                  <div className="flex flex-wrap items-center justify-center gap-2.5 mt-6">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-indigo-700 shadow-2xs">
+                      <FileText className="w-3.5 h-3.5 text-indigo-600" />
+                      Word (.docx) + MathType
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-blue-700 shadow-2xs">
+                      <FileCode className="w-3.5 h-3.5 text-blue-600" />
+                      LaTeX (.tex)
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-emerald-700 shadow-2xs">
+                      <FileText className="w-3.5 h-3.5 text-emerald-600" />
+                      Văn bản (.txt)
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-rose-700 shadow-2xs">
+                      <FileCheck className="w-3.5 h-3.5 text-rose-600" />
+                      PDF (.pdf)
+                    </span>
+                  </div>
                 </div>
-                <ul className="list-disc list-inside space-y-1 pl-1 text-slate-600 leading-relaxed">
-                  <li>
-                    <strong>Bảo toàn công thức:</strong> Giữ nguyên định dạng toán học LaTeX ($...$), không chuyển thành chữ thô.
-                  </li>
-                  <li>
-                    <strong>Ưu tiên Parser:</strong> Phân tích cú pháp trực tiếp từ mã nguồn LaTeX và tài liệu Word trước khi gọi AI.
-                  </li>
-                  <li>
-                    <strong>Kiểm soát chất lượng:</strong> Không tự động công bố hoặc lưu trực tiếp. Giáo viên luôn kiểm duyệt và sửa câu hỏi trước khi đưa vào đề thi.
-                  </li>
-                </ul>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-700">
+                      Dán nội dung đề thi (sao chép từ Word, MathType hoặc văn bản):
+                    </label>
+                    <span className="text-[11px] text-slate-500">
+                      Hỗ trợ công thức MathType ($...$, $$...$$, tags XML)
+                    </span>
+                  </div>
+                  <textarea
+                    rows={10}
+                    value={pastedText}
+                    onChange={e => setPastedText(e.target.value)}
+                    placeholder={`Ví dụ mẫu:
+Câu 1. Cho hàm số y = \\frac{x+1}{x-1}. Đạo hàm của hàm số là:
+A. y' = -\\frac{2}{(x-1)^2}*
+B. y' = \\frac{2}{(x-1)^2}
+C. y' = \\frac{1}{(x-1)^2}
+D. y' = -\\frac{1}{(x-1)^2}
+Lời giải: Ta có đạo hàm y' = \\frac{-2}{(x-1)^2}.
+
+câu 2: Khẳng định nào sau đây đúng?
+a) Hàm số đồng biến trên (1; +\\infty).
+b) Đồ thị có tiệm cận đứng x = 1. (Đúng)
+
+Bài 3. Điền giá trị cực tiểu của hàm số:
+Đáp án: 3`}
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-blue-500 focus:outline-hidden leading-relaxed"
+                  />
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-[11px] text-slate-500 font-mono">
+                      {pastedText.length} ký tự
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handlePastedTextSubmit}
+                      disabled={!pastedText.trim()}
+                      className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition-all shadow-xs flex items-center gap-1.5"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Bóc Tách Câu Hỏi & Chuyển MathType</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* MathType & Splitter Information Banner */}
+              <div className="bg-slate-50 rounded-xl p-4 border border-slate-200/80 text-xs text-slate-600 space-y-2.5">
+                <div className="font-semibold text-slate-800 flex items-center gap-1.5">
+                  <Sigma className="w-4 h-4 text-blue-600" />
+                  <span>Quy trình xử lý chuẩn hóa công thức MathType & bóc tách câu hỏi:</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                  <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-1">
+                    <span className="font-bold text-blue-700 block">1. Tải file lên / Dán đề</span>
+                    <p className="text-slate-600 text-[11px] leading-relaxed">
+                      Hệ thống tự động đọc cấu trúc văn bản từ Word .docx (OpenXML zip), LaTeX, TXT hoặc PDF.
+                    </p>
+                  </div>
+                  <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-1">
+                    <span className="font-bold text-indigo-700 block">2. Chuyển MathType sang LaTeX</span>
+                    <p className="text-slate-600 text-[11px] leading-relaxed">
+                      Phân tích các thẻ &lt;m:oMath&gt;, MathML và MathType MTEF, chuyển đổi sang mã chuẩn <code>$...$</code>.
+                    </p>
+                  </div>
+                  <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-1">
+                    <span className="font-bold text-emerald-700 block">3. Tách câu & Hiển thị KaTeX</span>
+                    <p className="text-slate-600 text-[11px] leading-relaxed">
+                      Tách chính xác theo <strong>Câu x., Câu x:, Bài x., Bài x:</strong> và hiển thị công thức toán học sắc nét.
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -407,7 +536,7 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
               </div>
 
               <div className="space-y-1.5 w-full">
-                <h3 className="text-base font-bold text-slate-900">Đang Xử Lý Đề Thi</h3>
+                <h3 className="text-base font-bold text-slate-900">Đang Xử Lý Đề Thi & Công Thức</h3>
                 <p className="text-xs text-slate-500">{progressMessage || 'Vui lòng chờ trong giây lát...'}</p>
               </div>
 
@@ -420,7 +549,7 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
               </div>
 
               <div className="text-xs text-slate-400 font-mono">
-                {selectedFile?.name} ({(selectedFile ? selectedFile.size / 1024 : 0).toFixed(1)} KB)
+                {selectedFile ? `${selectedFile.name} (${(selectedFile.size / 1024).toFixed(1)} KB)` : 'Nội dung dán trực tiếp'}
               </div>
 
               <button
@@ -435,31 +564,31 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
           {/* STEP 3: REVIEW & TEACHER INSPECTION */}
           {currentStep === 'REVIEW' && (
             <div className="space-y-5">
-              {/* Summary Stats & Warning Banner */}
+              {/* Summary Stats */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl">
-                  <span className="text-xs text-slate-500 font-medium">Tổng câu hỏi trích xuất</span>
+                  <span className="text-xs text-slate-500 font-medium">Tổng câu hỏi đã bóc tách</span>
                   <p className="text-xl font-bold text-slate-900 mt-0.5">{questions.length} câu</p>
                 </div>
 
                 <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl">
-                  <span className="text-xs text-emerald-700 font-medium">Câu hỏi hợp lệ</span>
+                  <span className="text-xs text-emerald-700 font-medium">Câu hỏi đạt chuẩn</span>
                   <p className="text-xl font-bold text-emerald-800 mt-0.5">{validTotal} câu</p>
                 </div>
 
                 <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl">
-                  <span className="text-xs text-amber-700 font-medium">Cần kiểm duyệt (Thiếu dữ liệu)</span>
+                  <span className="text-xs text-amber-700 font-medium">Cần kiểm duyệt bổ sung</span>
                   <p className="text-xl font-bold text-amber-800 mt-0.5">{needsReviewTotal} câu</p>
                 </div>
               </div>
 
-              {/* Warnings List */}
+              {/* Warnings List & MathType Notice */}
               {parseResult?.warnings && parseResult.warnings.length > 0 && (
-                <div className="p-4 bg-amber-50/80 border border-amber-200 rounded-xl space-y-2">
+                <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-xl space-y-2">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-xs font-bold text-amber-900">
-                      <AlertTriangle className="w-4 h-4 text-amber-600" />
-                      <span>Cảnh báo từ bộ phân tích cú pháp:</span>
+                    <div className="flex items-center gap-2 text-xs font-bold text-blue-900">
+                      <Sigma className="w-4 h-4 text-blue-600" />
+                      <span>Thông tin bóc tách & chuyển đổi công thức:</span>
                     </div>
 
                     {parseResult.requiresOcrOrAi && (
@@ -473,7 +602,7 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
                       </button>
                     )}
                   </div>
-                  <ul className="list-disc list-inside text-xs text-amber-800 space-y-1 pl-1">
+                  <ul className="list-disc list-inside text-xs text-blue-800 space-y-1 pl-1">
                     {parseResult.warnings.map((w, idx) => (
                       <li key={idx}>{w}</li>
                     ))}
@@ -481,8 +610,9 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
                 </div>
               )}
 
-              {/* Filter Tabs & Question List Actions */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+              {/* Controls bar: Status Filters + Formula Display Toggle */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                {/* Status tabs */}
                 <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl w-fit">
                   <button
                     onClick={() => setFilterStatus('ALL')}
@@ -516,25 +646,40 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
                   </button>
                 </div>
 
+                {/* Right controls: KaTeX vs LaTeX code toggle & change file */}
                 <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowRawLatex(!showRawLatex)}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
+                      showRawLatex
+                        ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                    title="Chuyển đổi giữa chế độ xem công thức toán học và xem mã nguồn LaTeX"
+                  >
+                    {showRawLatex ? <Code2 className="w-3.5 h-3.5 text-indigo-600" /> : <Eye className="w-3.5 h-3.5 text-slate-600" />}
+                    <span>{showRawLatex ? 'Đang hiện mã LaTeX ($)' : 'Hiển thị công thức (KaTeX)'}</span>
+                  </button>
+
                   <button
                     onClick={resetAll}
                     className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 rounded-lg"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Tải tệp khác</span>
+                    <span>Nhập lại</span>
                   </button>
                 </div>
               </div>
 
-              {/* Questions List */}
+              {/* Questions List with Formula Rendering */}
               <div className="space-y-3.5 max-h-[460px] overflow-y-auto pr-1">
                 {filteredQuestions.length === 0 ? (
                   <div className="p-8 text-center bg-slate-50 border border-slate-200 rounded-xl text-slate-500 text-xs">
                     Không có câu hỏi nào khớp với bộ lọc hiện tại.
                   </div>
                 ) : (
-                  filteredQuestions.map((q, idx) => (
+                  filteredQuestions.map((q) => (
                     <div
                       key={q.id}
                       className={`p-4 rounded-xl border transition-all ${
@@ -550,10 +695,10 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
                           </span>
                           <span className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-blue-50 text-blue-700">
                             {q.type === 'multiple_choice'
-                              ? 'Trắc nghiệm (1 đáp án)'
+                              ? 'Trắc nghiệm 1 đáp án (A, B, C, D)'
                               : q.type === 'true_false'
-                              ? 'Đúng / Sai'
-                              : 'Trả lời ngắn'}
+                              ? 'Đúng / Sai theo ý (a, b, c, d)'
+                              : 'Điền đáp án ngắn'}
                           </span>
 
                           {q.validationStatus === 'VALID' ? (
@@ -588,9 +733,15 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
                         </div>
                       </div>
 
-                      {/* Question Content with LaTeX rendering */}
+                      {/* Question Content */}
                       <div className="text-xs sm:text-sm text-slate-800 font-medium py-1">
-                        <LatexRenderer content={q.content || '[Chưa có nội dung câu hỏi]'} />
+                        {showRawLatex ? (
+                          <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-xs text-slate-700 whitespace-pre-wrap">
+                            {q.content || '[Chưa có nội dung câu hỏi]'}
+                          </div>
+                        ) : (
+                          <LatexRenderer content={q.content || '[Chưa có nội dung câu hỏi]'} />
+                        )}
                       </div>
 
                       {/* Options preview */}
@@ -615,23 +766,47 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
                                 }`}
                               >
                                 <span
-                                  className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold ${
+                                  className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
                                     isCorrect ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-600'
                                   }`}
                                 >
                                   {q.type === 'true_false' ? String.fromCharCode(97 + optIdx) : letter}
                                 </span>
                                 <div className="flex-1 truncate">
-                                  <LatexRenderer content={opt} />
+                                  {showRawLatex ? (
+                                    <span className="font-mono text-[11px]">{opt}</span>
+                                  ) : (
+                                    <LatexRenderer content={opt} />
+                                  )}
                                 </div>
                                 {isCorrect && (
-                                  <span className="text-[10px] text-emerald-700 font-bold uppercase">
+                                  <span className="text-[10px] text-emerald-700 font-bold uppercase shrink-0">
                                     {q.type === 'true_false' ? 'Đúng' : 'Đáp án'}
                                   </span>
                                 )}
                               </div>
                             );
                           })}
+                        </div>
+                      )}
+
+                      {/* Short Answer Preview */}
+                      {q.type === 'short_answer' && q.correctAnswer && (
+                        <div className="mt-2 p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs flex items-center gap-2">
+                          <span className="font-bold text-slate-700">Đáp án:</span>
+                          <span className="font-semibold text-emerald-700">{String(q.correctAnswer)}</span>
+                        </div>
+                      )}
+
+                      {/* Explanation Preview */}
+                      {q.explanation && (
+                        <div className="mt-2 p-2.5 bg-blue-50/50 border border-blue-100 rounded-lg text-xs text-slate-700">
+                          <span className="font-bold text-blue-900 block mb-0.5">Lời giải:</span>
+                          {showRawLatex ? (
+                            <span className="font-mono text-[11px]">{q.explanation}</span>
+                          ) : (
+                            <LatexRenderer content={q.explanation} />
+                          )}
                         </div>
                       )}
 

@@ -1,6 +1,8 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import { Question, ParseResult } from '../../types/question';
 import { applyValidationToQuestion } from './questionValidator';
+import { splitTextIntoQuestionBlocks, parseQuestionBlocksToQuestions } from './questionSplitter';
+import { replaceUnicodeMathSymbols, extractMathTypeLatexFromText } from './mathtypeConverter';
 
 /**
  * Extracts text content from a PDF ArrayBuffer using pdfjs-dist
@@ -46,7 +48,7 @@ export async function extractTextFromPdf(buffer: ArrayBuffer): Promise<{ text: s
  */
 export async function parsePdfExam(buffer: ArrayBuffer, fileName = 'exam.pdf'): Promise<ParseResult> {
   const warnings: string[] = [];
-  const questions: Question[] = [];
+  let questions: Question[] = [];
 
   let text = '';
   let numPages = 0;
@@ -91,117 +93,24 @@ export async function parsePdfExam(buffer: ArrayBuffer, fileName = 'exam.pdf'): 
     };
   }
 
-  // 2. Normalize text linebreaks & hyphens
-  const normalizedText = text
+  // 2. Normalize text, convert MathType/LaTeX remnants and Unicode math symbols
+  let normalizedText = text
     .replace(/(\w+)-\s*\n\s*(\w+)/g, '$1$2') // rejoin hyphenated words
     .replace(/\r\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n');
 
-  // 3. Extract question blocks matching "Câu 1", "Câu 2", "Bài 1"
-  const questionMarkerRegex = /(?:^|\n)\s*(?:Câu|Bài)\s*(\d+)[\.:\-\s]/gi;
-  const markers = Array.from(normalizedText.matchAll(questionMarkerRegex));
+  normalizedText = extractMathTypeLatexFromText(normalizedText);
+  normalizedText = replaceUnicodeMathSymbols(normalizedText);
 
-  const questionBlocks: { qNum: number; text: string }[] = [];
+  // 3. Extract question blocks matching "Câu x.", "Câu x:", "câu x.", "câu x:", "Bài x.", "Bài x:", "bài x.", "bài x:"
+  const questionBlocks = splitTextIntoQuestionBlocks(normalizedText);
 
-  if (markers.length > 0) {
-    for (let i = 0; i < markers.length; i++) {
-      const currentMarker = markers[i];
-      const qNum = parseInt(currentMarker[1], 10) || i + 1;
-      const startIndex = (currentMarker.index || 0) + currentMarker[0].length;
-      const endIndex = i < markers.length - 1 ? markers[i + 1].index : normalizedText.length;
-      const blockText = normalizedText.slice(startIndex, endIndex).trim();
-
-      questionBlocks.push({ qNum, text: blockText });
-    }
-  } else {
-    warnings.push('Không nhận diện được từ khóa "Câu 1.", "Câu 2." trong tệp PDF. Đã gom toàn bộ văn bản để giáo viên kiểm duyệt.');
-    questionBlocks.push({ qNum: 1, text: normalizedText.trim() });
+  if (questionBlocks.length === 1 && questionBlocks[0].qNum === 1 && questionBlocks[0].rawText === normalizedText.trim()) {
+    warnings.push('Không nhận diện được từ khóa "Câu 1.", "Câu 1:", "Bài 1.", "Bài 1:" trong tệp PDF. Đã gom toàn bộ văn bản để giáo viên kiểm duyệt.');
   }
 
-  // 4. Process each block
-  let indexCounter = 1;
-  for (const block of questionBlocks) {
-    const qNum = block.qNum || indexCounter;
-    let currentText = block.text;
-    let explanation = '';
-
-    // Check for explanation: Lời giải, Hướng dẫn
-    const explMatch = currentText.match(/(?:Lời\s+giải|Hướng\s+dẫn\s+giải|Giải\s+chi\s+tiết)[\.:\s]([\s\S]*)$/i);
-    if (explMatch && explMatch.index !== undefined) {
-      explanation = explMatch[1].trim();
-      currentText = currentText.slice(0, explMatch.index).trim();
-    }
-
-    // Check for Multiple Choice options: A., B., C., D.
-    const mcOptionRegex = /(?:^|\n|\s{2,})([A-D])[\.\)]\s*([\s\S]*?)(?=(?:[A-D][\.\)]|$))/g;
-    const mcMatches = Array.from(currentText.matchAll(mcOptionRegex));
-
-    // Check for True/False: a), b), c), d)
-    const tfOptionRegex = /(?:^|\n)\s*([a-d])[\)\.]\s*([\s\S]*?)(?=(?:\n\s*[a-d][\)\.]|$))/gi;
-    const tfMatches = Array.from(currentText.matchAll(tfOptionRegex));
-
-    let type: Question['type'] = 'multiple_choice';
-    const options: string[] = [];
-    let correctAnswer: string | boolean[] | string[] = '';
-    let content = currentText;
-
-    if (tfMatches.length >= 3) {
-      type = 'true_false';
-      const firstTfIndex = currentText.search(/(?:^|\n)\s*[a-d][\)\.]/i);
-      if (firstTfIndex > 0) {
-        content = currentText.slice(0, firstTfIndex).trim();
-      }
-
-      const tfAnswers: boolean[] = [];
-      tfMatches.forEach(m => {
-        let optText = m[2].trim();
-        const isTrue = /\((?:Đúng|Đ)\)|\*/i.test(optText);
-        optText = optText.replace(/\((?:Đúng|Sai|Đ|S)\)|\*/gi, '').trim();
-        options.push(optText);
-        tfAnswers.push(isTrue);
-      });
-      correctAnswer = tfAnswers;
-    } else if (mcMatches.length >= 2) {
-      type = 'multiple_choice';
-      const firstMcIndex = currentText.search(/(?:^|\n|\s{2,})[A-D][\.\)]/);
-      if (firstMcIndex > 0) {
-        content = currentText.slice(0, firstMcIndex).trim();
-      }
-
-      let detectedLetter = '';
-      mcMatches.forEach(m => {
-        const letter = m[1].toUpperCase();
-        let optText = m[2].trim();
-
-        if (/\*|\((?:Đúng|Đ)\)/i.test(optText) && !detectedLetter) {
-          detectedLetter = letter;
-        }
-
-        optText = optText.replace(/\*|\((?:Đúng|Sai|Đ|S)\)/gi, '').trim();
-        options.push(optText);
-      });
-
-      correctAnswer = detectedLetter;
-    } else {
-      warnings.push(`Câu ${qNum}: Bố cục các phương án chưa rõ ràng từ file PDF.`);
-    }
-
-    const rawQuestion: Question = {
-      id: `q_pdf_${Date.now()}_${indexCounter}`,
-      questionNumber: qNum,
-      type,
-      content: content.trim(),
-      options,
-      correctAnswer,
-      explanation: explanation || undefined,
-      points: 1,
-      rawText: block.text,
-    };
-
-    const validatedQ = applyValidationToQuestion(rawQuestion);
-    questions.push(validatedQ);
-    indexCounter++;
-  }
+  // 4. Parse blocks into structured Question objects
+  questions = parseQuestionBlocksToQuestions(questionBlocks);
 
   const validCount = questions.filter(q => q.validationStatus === 'VALID').length;
   const needsReviewCount = questions.length - validCount;

@@ -289,7 +289,7 @@ export const StudentExamResult: React.FC<StudentExamResultProps> = ({
 
                   {/* Question Content */}
                   <div className="text-sm font-medium text-slate-900 py-1 leading-relaxed">
-                    <LatexRenderer content={q.content} />
+                    <LatexRenderer content={q.content || ''} />
                   </div>
 
                   {/* Multiple Choice Answers */}

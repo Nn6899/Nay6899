@@ -13,8 +13,8 @@ export function parseLatexContent(text: string): LatexPart[] {
   if (!text) return [];
 
   const parts: LatexPart[] = [];
-  // Regex to match $$...$$, \[...\], $...$, \(...\)
-  const regex = /(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\$[^\$\n]+?\$|\\\([\s\S]*?\\\))/g;
+  // Regex to match $$...$$, \[...\], $...$ (can span lines within a block), \(...\)
+  const regex = /(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\$(?:[^\$\n]+|\n(?!\n)[^\$]+)+\$|\\\([\s\S]*?\\\))/g;
 
   let lastIndex = 0;
   let match: RegExpExecArray | null;
