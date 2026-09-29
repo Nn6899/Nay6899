@@ -28,7 +28,7 @@ export interface SplitQuestionBlock {
  * - Markdown variants: **Câu 1.**, **Câu 1:**, **Bài 1.**, **Bài 1:**, <b>Câu 1:</b>
  */
 export const QUESTION_START_REGEX =
-  /(?:^|\n)\s*(?:\*{1,2}|<b>)?(?:Câu|câu|Bài|bài)\s*([0-9]+|[IVXLCDMivxlcdm]+)(?:\s*[\.:\-])(?:\*{1,2}|<\/b>)?(?:\s+|$)/g;
+  /(?:^|\n)[ \t]*(?:\*{1,2}|<b>)?(?:Câu|câu|CÂU|Bài|bài|BÀI)[ \t]*([0-9]+|[IVXLCDMivxlcdm]+)[ \t]*(?:\([^)\n]{0,40}\)|\[[^\]\n]{0,40}\])?[ \t]*[\.:\-](?:\*{1,2}|<\/b>)?/g;
 
 /**
  * Checks if a string contains question start markers
@@ -123,6 +123,73 @@ function parseRomanNumeral(roman: string): number {
   return total > 0 ? total : 0;
 }
 
+interface OptionSequence {
+  content: string;
+  options: string[];
+}
+
+/**
+ * Tìm dãy phương án theo thứ tự (A. B. C. D. hoặc a) b) c) d)) trong một câu.
+ * - Nhãn phải đứng đầu dòng hoặc sau khoảng trắng (không bắt "ABCD.A'B'C'D'").
+ * - Chọn dãy bắt đầu bằng A/a xuất hiện SAU CÙNG mà có đủ B, C, D phía sau -> không nhầm "vuông tại A." trong đề.
+ * - Cho phép dấu * đánh dấu đáp án đúng đứng trước nhãn: "*A." hoặc "*a)".
+ */
+export function findOptionSequence(text: string, kind: 'upper' | 'lower'): OptionSequence | null {
+  const letters = kind === 'upper' ? ['A', 'B', 'C', 'D'] : ['a', 'b', 'c', 'd'];
+  const punct = kind === 'upper' ? '[.)]' : '[).]';
+  const re = new RegExp(`(^|\\n|[ \\t\\u00a0])(\\*?)(?:\\*\\*|<b>)?([${letters.join('')}])${punct}(?:\\*\\*|<\\/b>)?(?=\\s|$|\\*|\\$)`, 'g');
+
+  type Cand = { letter: string; start: number; end: number; star: boolean };
+  const cands: Cand[] = [];
+  for (const m of text.matchAll(re)) {
+    const lead = m[1] || '';
+    const start = (m.index ?? 0) + lead.length;
+    cands.push({ letter: m[3], start, end: (m.index ?? 0) + m[0].length, star: m[2] === '*' });
+  }
+
+  const minCount = kind === 'upper' ? 2 : 3;
+  for (let i = cands.length - 1; i >= 0; i--) {
+    if (cands[i].letter !== letters[0]) continue;
+    const seq: Cand[] = [cands[i]];
+    for (let j = i + 1; j < cands.length && seq.length < 4; j++) {
+      if (cands[j].letter === letters[seq.length]) seq.push(cands[j]);
+    }
+    if (seq.length < minCount) continue;
+
+    const options = seq.map((c, k) => {
+      const endPos = k + 1 < seq.length ? seq[k + 1].start : text.length;
+      const body = text.slice(c.end, endPos).trim();
+      return c.star ? `*${body}` : body;
+    });
+    return { content: text.slice(0, seq[0].start).trim(), options };
+  }
+  return null;
+}
+
+/**
+ * Nhận biết và gỡ dấu đánh dấu đáp án đúng trong một phương án:
+ *  "*..." (dấu * đầu), "...*" (dấu * cuối, không phải ^* trong công thức), "(Đúng)", "[Đ]"...
+ */
+export function stripCorrectMarker(option: string): { text: string; isMarked: boolean; isFalseMarked: boolean } {
+  let text = option.trim();
+  let isMarked = false;
+  let isFalseMarked = false;
+
+  if (/^\*(?!\*)/.test(text)) {
+    isMarked = true;
+    text = text.slice(1).trim();
+  }
+  if (/[^\^_\\*]\*$/.test(text) || text === '*') {
+    isMarked = true;
+    text = text.slice(0, -1).trim();
+  }
+  if (/\((?:Đúng|Đ)\)|\[(?:Đúng|Đ)\]/i.test(text)) isMarked = true;
+  if (/\((?:Sai|S)\)|\[(?:Sai|S)\]/i.test(text)) isFalseMarked = true;
+  text = text.replace(/\s*(?:\((?:Đúng|Sai|Đ|S)\)|\[(?:Đúng|Sai|Đ|S)\])\s*/gi, ' ').trim();
+
+  return { text, isMarked, isFalseMarked };
+}
+
 /**
  * Parses an array of SplitQuestionBlocks into fully structured Question objects.
  * Extracts:
@@ -139,9 +206,14 @@ export function parseQuestionBlocksToQuestions(
 ): Question[] {
   const questions: Question[] = [];
   let indexCounter = 1;
+  // Đề GDPT 2018 đánh số lại từ Câu 1 ở mỗi PHẦN -> bảng đáp án A-D chỉ áp dụng cho phần đầu
+  let partIndex = 0;
+  let lastNum = 0;
 
   for (const block of blocks) {
     const qNum = block.qNum || indexCounter;
+    if (qNum <= lastNum) partIndex++;
+    lastNum = qNum;
     let currentText = block.rawText;
     let explanation = '';
 
@@ -154,61 +226,41 @@ export function parseQuestionBlocksToQuestions(
       currentText = currentText.slice(0, explMatch.index).trim();
     }
 
-    // 2. Check for Multiple Choice format (A., B., C., D. or A), B), C), D))
-    // Strict uppercase only, can be at line start or preceded by space/formula
-    const mcOptionRegex = /(?:^|\n|\s{2,}|(?<=[^\$]\s))(?:\*{1,2}|<b>)?([A-D])[\.\)](?:\*{1,2}|<\/b>)?\s*([\s\S]*?)(?=(?:(?:\n|\s{2,}|(?<=[^\$]\s))(?:\*{1,2}|<b>)?[A-D][\.\)]|$))/g;
-    const mcMatches = Array.from(currentText.matchAll(mcOptionRegex));
-
-    // 3. Check for True/False format: strict lowercase (a), b), c), d) or a., b., c., d.)
-    const tfOptionRegex = /(?:^|\n|\s{2,})(?:\*{1,2}|<b>)?([a-d])[\)\.](?:\*{1,2}|<\/b>)?\s*([\s\S]*?)(?=(?:(?:\n|\s{2,})(?:\*{1,2}|<b>)?[a-d][\)\.]|$))/g;
-    const tfMatches = Array.from(currentText.matchAll(tfOptionRegex));
+    // 2. Tìm dãy phương án A-D (trắc nghiệm) hoặc a-d (đúng/sai).
+    // Lấy dãy A,B,C,D (theo thứ tự) nằm CUỐI câu để tránh nhầm "vuông tại A." trong đề bài.
+    const mc = findOptionSequence(currentText, 'upper');
+    const tf = mc ? null : findOptionSequence(currentText, 'lower');
 
     let type: Question['type'] = 'multiple_choice';
     const options: string[] = [];
-    let correctAnswer: string | boolean[] | string[] = answerKeyMap.get(qNum) || '';
+    let correctAnswer: string | boolean[] | string[] = (partIndex === 0 && answerKeyMap.get(qNum)) || '';
     let content = currentText;
 
-    if (mcMatches.length >= 2) {
-      // Multiple Choice format
+    if (mc) {
       type = 'multiple_choice';
-      const firstMcIndex = currentText.search(/(?:^|\n|\s{2,})(?:\*{1,2}|<b>)?[A-D][\.\)]/);
-      if (firstMcIndex > 0) {
-        content = currentText.slice(0, firstMcIndex).trim();
-      }
+      content = mc.content;
 
-      let detectedLetter = '';
-      mcMatches.forEach(m => {
-        const letter = m[1].toUpperCase();
-        let optText = m[2].trim();
-
-        // Check if marked as correct with * or [Đúng] or (Đúng)
-        if (/\*|\((?:Đúng|Đ)\)|\[(?:Đúng|Đ)\]/i.test(optText) && !detectedLetter) {
-          detectedLetter = letter;
-        }
-
-        optText = optText.replace(/\*|\((?:Đúng|Sai|Đ|S)\)|\[(?:Đúng|Sai|Đ|S)\]/gi, '').trim();
-        options.push(optText);
+      const marked: string[] = [];
+      mc.options.forEach((opt, i) => {
+        const { text, isMarked } = stripCorrectMarker(opt);
+        if (isMarked) marked.push(String.fromCharCode(65 + i));
+        options.push(text);
       });
 
-      if (!correctAnswer && detectedLetter) {
-        correctAnswer = detectedLetter;
+      // Chỉ nhận khi đúng 1 phương án được đánh dấu (tránh nhầm khi cả 4 cùng định dạng)
+      if (!correctAnswer && marked.length === 1) {
+        correctAnswer = marked[0];
       }
-    } else if (tfMatches.length >= 3) {
+    } else if (tf) {
       // True/False GDPT 2018 format
       type = 'true_false';
-      const firstTfIndex = currentText.search(/(?:^|\n|\s{2,})(?:\*{1,2}|<b>)?[a-d][\)\.]/);
-      if (firstTfIndex > 0) {
-        content = currentText.slice(0, firstTfIndex).trim();
-      }
+      content = tf.content;
 
       const tfAnswers: boolean[] = [];
-      tfMatches.forEach(m => {
-        let optText = m[2].trim();
-        // Check if marked with (Đúng), (Đ), *, [Đ], (Sai), (S)
-        const isTrue = /\((?:Đúng|Đ)\)|\[(?:Đúng|Đ)\]|\*/i.test(optText);
-        optText = optText.replace(/\((?:Đúng|Sai|Đ|S)\)|\[(?:Đúng|Sai|Đ|S)\]|\*/gi, '').trim();
-        options.push(optText);
-        tfAnswers.push(isTrue);
+      tf.options.forEach(opt => {
+        const { text, isMarked, isFalseMarked } = stripCorrectMarker(opt);
+        options.push(text);
+        tfAnswers.push(isMarked && !isFalseMarked);
       });
 
       if (!correctAnswer || typeof correctAnswer === 'string') {

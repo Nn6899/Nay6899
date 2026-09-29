@@ -1,0 +1,29 @@
+MathType (MTEF) to LaTeX converter
+==================================
+
+This directory contains a TypeScript port of mtef-go
+(https://github.com/zhexiao/mtef-go), Copyright (c) zhexiao,
+licensed under the Apache License, Version 2.0.
+
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+Changes from the original: ported from Go to TypeScript; the record parser
+was restructured into a recursive-descent reader with bounds checking and
+MTEF v2/v3 (Equation Editor 3.0) support; the LaTeX emitter and character
+tables were rewritten to produce KaTeX-compatible output.
+
+The OLE compound-file reader used by this module is the `cfb` npm package
+(SheetJS, Apache License 2.0).
+
+Test fixtures under tests/fixtures/mathtype/ come from
+  - zhexiao/mtef-go (Apache License 2.0), and
+  - jure/mathtype_to_mathml (MIT License, Copyright (c) 2015 Jure Triglav);
+see tests/fixtures/mathtype/README.md.

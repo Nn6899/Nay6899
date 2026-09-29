@@ -586,6 +586,31 @@ export const attemptService = {
   },
 
   /**
+   * Danh sách bài làm của một đề (cho tab "Kết quả" của giáo viên), mới nhất trước.
+   * Có Firebase: đọc tests/{testId}/attempts. Chưa có Firebase: đọc bài làm lưu trên trình duyệt này.
+   */
+  async listAttempts(testId: string): Promise<TestAttempt[]> {
+    let list: TestAttempt[] = [];
+    if (db) {
+      const snap = await getDocs(collection(db, 'tests', testId, 'attempts'));
+      snap.forEach(d => list.push(d.data() as TestAttempt));
+    } else {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith(LOCAL_ATTEMPT_KEY_PREFIX)) continue;
+        try {
+          const a = JSON.parse(localStorage.getItem(key) || 'null') as TestAttempt | null;
+          if (a && a.testId === testId) list.push(a);
+        } catch {
+          // bỏ qua dữ liệu hỏng
+        }
+      }
+    }
+    list = list.sort((a, b) => String(b.submittedAt || b.startedAt).localeCompare(String(a.submittedAt || a.startedAt)));
+    return list;
+  },
+
+  /**
    * Retrieves grade result from storage or Firestore
    */
   async getGradeResult(attemptId: string, testId?: string): Promise<AttemptGradeResult | null> {

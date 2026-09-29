@@ -9,6 +9,7 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       {
+        // Chỉ dùng khi chạy `npm run dev` ở máy. Trên Vercel, file api/ai/extract-questions.ts tự chạy thành hàm serverless.
         name: 'api-ai-server',
         configureServer(server) {
           server.middlewares.use('/api/ai/extract-questions', async (req, res) => {
@@ -19,13 +20,12 @@ export default defineConfig(() => {
               });
               req.on('end', async () => {
                 try {
-                  const { content, fileName } = JSON.parse(body || '{}');
-                  const { handleAiQuestionExtraction } = await import('./src/server/geminiHandler.ts');
-                  const result = await handleAiQuestionExtraction(content, fileName);
+                  const mod = await server.ssrLoadModule('/api/ai/extract-questions.ts');
+                  const result = await mod.extractQuestions(JSON.parse(body || '{}'));
                   res.setHeader('Content-Type', 'application/json');
                   res.end(JSON.stringify(result));
                 } catch (err: any) {
-                  res.statusCode = 500;
+                  res.statusCode = err.status || 500;
                   res.setHeader('Content-Type', 'application/json');
                   res.end(JSON.stringify({ error: err.message || 'AI processing error' }));
                 }

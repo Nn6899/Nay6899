@@ -1,8 +1,10 @@
 import mammoth from 'mammoth';
 import { Question, ParseResult } from '../../types/question';
-import { extractDocxTextWithLatex } from './docxXmlExtractor';
+import { applyValidationToQuestion } from './questionValidator';
+import { extractDocxTextWithLatex, MATH_PLACEHOLDER } from './docxXmlExtractor';
 import { splitTextIntoQuestionBlocks, parseQuestionBlocksToQuestions } from './questionSplitter';
-import { extractMathTypeLatexFromText, replaceUnicodeMathSymbols } from './mathtypeConverter';
+import { prepareExamText } from './answerKey';
+import { extractMathTypeLatexFromText, replaceUnicodeMathSymbolsOutsideMath } from './mathtypeConverter';
 
 /**
  * Parses DOCX ArrayBuffer into structured Question array.
@@ -15,6 +17,7 @@ export async function parseDocxExam(buffer: ArrayBuffer, fileName = 'exam.docx')
   const warnings: string[] = [];
   let rawText = '';
   let formulasConverted = 0;
+  let images: string[] = [];
 
   // 1. Primary High-Fidelity Extraction via direct OpenXML ZIP inspection (word/document.xml)
   try {
@@ -22,8 +25,18 @@ export async function parseDocxExam(buffer: ArrayBuffer, fileName = 'exam.docx')
     if (xmlResult && xmlResult.text && xmlResult.text.trim().length > 0) {
       rawText = xmlResult.text;
       formulasConverted = xmlResult.mathFormulaCount;
+      images = xmlResult.images;
       if (formulasConverted > 0) {
-        warnings.push(`Hệ thống đã tự động nhận diện và chuyển đổi ${formulasConverted} công thức MathType/OMML sang định dạng chuẩn LaTeX.`);
+        warnings.push(`Đã chuyển ${formulasConverted} công thức (MathType: ${xmlResult.mathTypeConverted}, Equation Word: ${formulasConverted - xmlResult.mathTypeConverted}) sang LaTeX.`);
+      }
+      if (xmlResult.mathTypeFailed > 0) {
+        warnings.push(`${xmlResult.mathTypeFailed} công thức MathType không đọc được, hiển thị là "${MATH_PLACEHOLDER}" — hãy sửa tay hoặc dùng "Bóc tách lại bằng AI".`);
+      }
+      if (images.length > 0) {
+        warnings.push(`Đã lấy ${images.length} hình ảnh trong đề và gắn vào câu hỏi tương ứng.`);
+      }
+      if (xmlResult.skippedImages > 0) {
+        warnings.push(`${xmlResult.skippedImages} hình dạng WMF/EMF hoặc quá lớn không hiển thị được trên web (đánh dấu [HÌNH]) — hãy chèn lại ảnh PNG/JPG khi duyệt.`);
       }
     }
   } catch (err: any) {
@@ -36,7 +49,7 @@ export async function parseDocxExam(buffer: ArrayBuffer, fileName = 'exam.docx')
       const rawRes = await mammoth.extractRawText({ arrayBuffer: buffer });
       let extracted = rawRes.value || '';
       extracted = extractMathTypeLatexFromText(extracted);
-      extracted = replaceUnicodeMathSymbols(extracted);
+      extracted = replaceUnicodeMathSymbolsOutsideMath(extracted);
       rawText = extracted;
     } catch (err: any) {
       return {
@@ -65,37 +78,11 @@ export async function parseDocxExam(buffer: ArrayBuffer, fileName = 'exam.docx')
     };
   }
 
-  // 3. Check for Answer Key Table (BẢNG ĐÁP ÁN, ĐÁP ÁN TRẮC NGHIỆM)
-  const answerKeyMap = new Map<number, string>();
-  const answerKeyHeaderRegex = /(?:BẢNG\s+ĐÁP\s+ÁN|ĐÁP\s+ÁN\s+TRẮC\s+NGHIỆM|BẢNG\s+TRẢ\s+LỜI)/i;
-  const headerMatch = rawText.match(answerKeyHeaderRegex);
-
-  let parsingBody = rawText;
-
-  if (headerMatch && headerMatch.index !== undefined) {
-    const afterHeader = rawText.slice(headerMatch.index + headerMatch[0].length);
-    const nextQuestionMatch = afterHeader.match(/(?:^|\n)\s*(?:Câu|câu|Bài|bài)\s*([0-9]+|[IVXLCDMivxlcdm]+)[\.:\-\s]/i);
-
-    let keySection = '';
-    if (nextQuestionMatch && nextQuestionMatch.index !== undefined) {
-      keySection = afterHeader.slice(0, nextQuestionMatch.index);
-      parsingBody = rawText.slice(0, headerMatch.index) + '\n' + afterHeader.slice(nextQuestionMatch.index);
-    } else {
-      keySection = afterHeader;
-      parsingBody = rawText.slice(0, headerMatch.index);
-    }
-
-    const pairRegex = /(\d+)\s*[\.\-:\s]\s*([A-D])/gi;
-    let keyPairMatch: RegExpExecArray | null;
-    while ((keyPairMatch = pairRegex.exec(keySection)) !== null) {
-      const qIndex = parseInt(keyPairMatch[1], 10);
-      const ansChar = keyPairMatch[2].toUpperCase();
-      answerKeyMap.set(qIndex, ansChar);
-    }
-    if (answerKeyMap.size > 0) {
-      warnings.push(`Đã tìm thấy bảng đáp án với ${answerKeyMap.size} đáp án.`);
-    }
-  }
+  // 3. Tách bảng đáp án + phần lời giải cuối đề
+  const prepared = prepareExamText(rawText);
+  const answerKeyMap = prepared.answerKeyMap;
+  const parsingBody = prepared.body;
+  warnings.push(...prepared.warnings);
 
   // 4. Split into question blocks using the comprehensive question splitter:
   // "Câu x.", "Câu x:", "câu x.", "câu x:", "Bài x.", "Bài x:", "bài x.", "bài x:"
@@ -106,7 +93,10 @@ export async function parseDocxExam(buffer: ArrayBuffer, fileName = 'exam.docx')
   }
 
   // 5. Parse blocks into structured Question objects
-  const questions: Question[] = parseQuestionBlocksToQuestions(questionBlocks, answerKeyMap);
+  const questions: Question[] = attachImagesToQuestions(
+    parseQuestionBlocksToQuestions(questionBlocks, answerKeyMap),
+    images
+  );
 
   const validCount = questions.filter(q => q.validationStatus === 'VALID').length;
   const needsReviewCount = questions.length - validCount;
@@ -122,4 +112,38 @@ export async function parseDocxExam(buffer: ArrayBuffer, fileName = 'exam.docx')
     needsReviewCount,
     rawTextSample: rawText.slice(0, 300),
   };
+}
+
+/**
+ * Chuyển các chỗ [[IMG:n]] trong nội dung/phương án/lời giải thành ảnh đính kèm của câu hỏi.
+ */
+export function attachImagesToQuestions(questions: Question[], images: string[]): Question[] {
+  if (images.length === 0) return questions;
+  const token = /\s*\[\[IMG:(\d+)\]\]\s*/g;
+  return questions.map(q => {
+    const found: string[] = [];
+    const take = (s: string) =>
+      s.replace(token, (_, n) => {
+        const src = images[Number(n)];
+        if (src && !found.includes(src)) found.push(src);
+        return ' ';
+      }).trim();
+    const content = take(q.content);
+    // Phương án chỉ là hình (vd chọn đồ thị đúng) -> ghi "Hình k" để học sinh đối chiếu với ảnh bên dưới đề
+    const options = q.options.map(opt => {
+      const before = found.length;
+      const text = take(opt);
+      return text || (found.length > before ? `Hình ${found.length}` : text);
+    });
+    const updated: Question = {
+      ...q,
+      content,
+      options,
+      explanation: q.explanation ? take(q.explanation) : q.explanation,
+    };
+    if (found.length > 0) {
+      updated.images = [...(q.images || []), ...found];
+    }
+    return found.length > 0 ? applyValidationToQuestion(updated) : updated;
+  });
 }

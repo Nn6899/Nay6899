@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp, type FirebaseApp } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
-import { getFirestore, type Firestore } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, type Firestore } from 'firebase/firestore';
 import { getStorage, type FirebaseStorage } from 'firebase/storage';
 
 export const firebaseConfig = {
@@ -29,7 +29,12 @@ try {
   if (isFirebaseConfigured) {
     app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
     auth = getAuth(app);
-    db = getFirestore(app);
+    // Bỏ qua field undefined (vd câu hỏi không có lời giải) thay vì báo lỗi khi lưu
+    try {
+      db = initializeFirestore(app, { ignoreUndefinedProperties: true });
+    } catch {
+      db = getFirestore(app);
+    }
     storage = getStorage(app);
   }
 } catch (error) {

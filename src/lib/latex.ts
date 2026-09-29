@@ -67,10 +67,16 @@ export function parseLatexContent(text: string): LatexPart[] {
  * Render a single formula to HTML string via KaTeX
  */
 export function renderFormulaToHtml(formula: string, isBlock = false): string {
+  // Phân số, tích phân, tổng, giới hạn trong dòng hiển thị cỡ lớn cho học sinh dễ đọc (như trên đề giấy)
+  if (!isBlock && /\\(?:frac|int|iint|oint|sum|prod|lim)\b/.test(formula) && !/\\displaystyle/.test(formula)) {
+    formula = `\\displaystyle ${formula}`;
+  }
   try {
     return katex.renderToString(formula, {
       displayMode: isBlock,
       throwOnError: false,
+      // Chữ tiếng Việt trong \text{} (từ MathType) hiển thị bình thường, không cần cảnh báo
+      strict: 'ignore',
       output: 'htmlAndMathml',
     });
   } catch (error) {

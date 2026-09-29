@@ -435,6 +435,9 @@ export const StudentExamTaking: React.FC<StudentExamTakingProps> = ({
                           className="max-h-60 max-w-full object-contain mx-auto"
                           referrerPolicy="no-referrer"
                         />
+                        {currentQuestion.images!.length > 1 && (
+                          <p className="text-center text-xs text-slate-500 mt-1">Hình {imgIdx + 1}</p>
+                        )}
                       </div>
                     ))}
                   </div>

@@ -620,3 +620,22 @@ export function cleanLatexFormula(latex: string): string {
 
   return res;
 }
+
+/**
+ * Đổi ký hiệu unicode (≤, π, ...) ngoài công thức sang LaTeX và bọc trong $...$ để KaTeX hiển thị.
+ * Không đụng vào phần đã nằm trong $...$.
+ */
+export function replaceUnicodeMathSymbolsOutsideMath(text: string): string {
+  return text
+    .split(/(\$\$[\s\S]*?\$\$|\$[^$\n]*\$)/g)
+    .map((seg, i) => {
+      if (i % 2 === 1) return seg;
+      return seg
+        .replace(/√\s*(\d+|[A-Za-z])/g, (_, arg) => `$\\sqrt{${arg}}$`)
+        .replace(/[^\x00-\x7F]/g, ch => {
+          const latex = replaceUnicodeMathSymbols(ch);
+          return latex === ch ? ch : `$${latex.trim()}$`;
+        });
+    })
+    .join('');
+}

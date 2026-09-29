@@ -84,9 +84,18 @@ async function generateUniquePublicCode(): Promise<string> {
         return code;
       }
     } else {
-      const q = query(collection(db, TESTS_COLLECTION), where('publicCode', '==', code));
-      const snap = await getDocs(q);
-      if (snap.empty) {
+      try {
+        const q = query(
+          collection(db, TESTS_COLLECTION),
+          where('publicCode', '==', code),
+          where('status', 'in', ['PUBLISHED', 'ACTIVE'])
+        );
+        const snap = await getDocs(q);
+        if (snap.empty) {
+          return code;
+        }
+      } catch {
+        // Mã 8 ký tự ngẫu nhiên (~10^12 khả năng) nên nếu không kiểm tra được thì vẫn dùng an toàn
         return code;
       }
     }
@@ -265,9 +274,11 @@ export async function getTestByPublicCode(publicCode: string): Promise<QuizTest 
   }
 
   try {
+    // Phải lọc theo status để Firestore Rules cho phép học sinh (chưa đăng nhập) tìm đề
     const q = query(
       collection(db, TESTS_COLLECTION),
-      where('publicCode', '==', cleanCode)
+      where('publicCode', '==', cleanCode),
+      where('status', 'in', ['PUBLISHED', 'ACTIVE'])
     );
     const snap = await getDocs(q);
     if (snap.empty) return null;

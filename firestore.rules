@@ -86,7 +86,9 @@ service cloud.firestore {
       );
 
       // Teacher listing their own tests (MUST include where('teacherId', '==', auth.uid))
-      allow list: if isSignedIn() && resource.data.teacherId == request.auth.uid;
+      // Students looking up a test by code (query MUST include where('status', 'in', ['PUBLISHED', 'ACTIVE']))
+      allow list: if (isSignedIn() && resource.data.teacherId == request.auth.uid)
+        || resource.data.status in ['PUBLISHED', 'ACTIVE'];
 
       // Teacher creating test
       allow create: if isSignedIn()
@@ -100,10 +102,14 @@ service cloud.firestore {
         && request.resource.data.publicCode is string;
 
       // Teacher updating their own test only; teacherId cannot be reassigned
-      allow update: if isSignedIn()
+      // Students may only bump totalSubmissions (by +1) on an open test when they submit
+      allow update: if (isSignedIn()
         && resource.data.teacherId == request.auth.uid
         && request.resource.data.teacherId == resource.data.teacherId
-        && request.resource.data.status in ['DRAFT', 'PUBLISHED', 'ACTIVE', 'CLOSED', 'ARCHIVED'];
+        && request.resource.data.status in ['DRAFT', 'PUBLISHED', 'ACTIVE', 'CLOSED', 'ARCHIVED'])
+        || (resource.data.status in ['PUBLISHED', 'ACTIVE']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalSubmissions'])
+          && request.resource.data.totalSubmissions == resource.data.get('totalSubmissions', 0) + 1);
 
       // Teacher deleting their own test only
       allow delete: if isSignedIn()

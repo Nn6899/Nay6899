@@ -1,31 +1,74 @@
-import * as pdfjsLib from 'pdfjs-dist';
+import { loadPdfDocument } from '../../lib/pdfjs';
 import { Question, ParseResult } from '../../types/question';
 import { applyValidationToQuestion } from './questionValidator';
 import { splitTextIntoQuestionBlocks, parseQuestionBlocksToQuestions } from './questionSplitter';
-import { replaceUnicodeMathSymbols, extractMathTypeLatexFromText } from './mathtypeConverter';
+import { prepareExamText } from './answerKey';
+import { replaceUnicodeMathSymbolsOutsideMath, extractMathTypeLatexFromText } from './mathtypeConverter';
+
+/**
+ * Ghép các mảnh chữ của pdf.js thành từng dòng theo toạ độ.
+ * Giữ xuống dòng để nhận ra "Câu N." ở đầu dòng; khoảng trống ngang lớn (A. ...   B. ...) thành nhiều dấu cách
+ * để bộ tách phương án nhận ra các phương án nằm cùng một hàng.
+ */
+export function pdfItemsToLines(items: any[]): string {
+  type Item = { str: string; x: number; y: number; w: number; h: number; eol: boolean };
+  const list: Item[] = items
+    .filter(it => it && typeof it.str === 'string')
+    .map(it => ({
+      str: it.str,
+      x: it.transform?.[4] ?? 0,
+      y: it.transform?.[5] ?? 0,
+      w: it.width ?? 0,
+      h: Math.abs(it.height || it.transform?.[3] || 10),
+      eol: Boolean(it.hasEOL),
+    }));
+
+  const lines: string[] = [];
+  let line = '';
+  let prev: Item | null = null;
+
+  for (const it of list) {
+    if (prev) {
+      const sameLine = Math.abs(it.y - prev.y) < Math.max(2, Math.min(it.h, prev.h) * 0.5);
+      if (!sameLine) {
+        lines.push(line);
+        line = '';
+      } else if (line && it.str) {
+        const gap = it.x - (prev.x + prev.w);
+        if (gap > prev.h * 1.5) line += '    ';
+        else if (gap > prev.h * 0.15 && !line.endsWith(' ') && !it.str.startsWith(' ')) line += ' ';
+      }
+    }
+    line += it.str;
+    if (it.eol && it.str === '') {
+      lines.push(line);
+      line = '';
+      prev = null;
+      continue;
+    }
+    prev = it.str ? it : prev;
+  }
+  if (line) lines.push(line);
+
+  return lines
+    .map(l => l.replace(/[ \t]+$/g, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n');
+}
 
 /**
  * Extracts text content from a PDF ArrayBuffer using pdfjs-dist
  */
 export async function extractTextFromPdf(buffer: ArrayBuffer): Promise<{ text: string; numPages: number; avgCharsPerPage: number }> {
   try {
-    const loadingTask = pdfjsLib.getDocument({
-      data: new Uint8Array(buffer),
-      useWorkerFetch: false,
-      useSystemFonts: true,
-    } as any);
-
-    const pdfDoc = await loadingTask.promise;
+    const pdfDoc = await loadPdfDocument(buffer);
     const numPages = pdfDoc.numPages;
     const pageTexts: string[] = [];
 
     for (let pageNum = 1; pageNum <= numPages; pageNum++) {
       const page = await pdfDoc.getPage(pageNum);
       const textContent = await page.getTextContent();
-      const pageStrings = textContent.items
-        .map((item: any) => (item && typeof item.str === 'string' ? item.str : ''))
-        .filter(Boolean);
-      pageTexts.push(pageStrings.join(' '));
+      pageTexts.push(pdfItemsToLines(textContent.items as any[]));
     }
 
     const fullText = pageTexts.join('\n\n');
@@ -76,7 +119,7 @@ export async function parsePdfExam(buffer: ArrayBuffer, fileName = 'exam.pdf'): 
   // If fewer than 30 characters in total or less than 25 chars per page, it is scanned/image-based
   if (text.trim().length < 30 || avgCharsPerPage < 25) {
     warnings.push(
-      `Tài liệu PDF (${numPages} trang) không có lớp văn bản số hoặc chủ yếu là hình ảnh/bản scan (chỉ tìm thấy ${text.trim().length} ký tự). Hệ thống không tự động tạo câu hỏi để tránh sai lệch dữ liệu. Vui lòng sử dụng tính năng "Nhận diện nâng cao bằng AI" hoặc tải lên file Word/LaTeX.`
+      `PDF (${numPages} trang) là bản scan/ảnh, gần như không có lớp chữ (${text.trim().length} ký tự) — cần AI nhận dạng (OCR). Nếu chưa bật AI, hãy dùng file Word/LaTeX.`
     );
 
     return {
@@ -95,22 +138,24 @@ export async function parsePdfExam(buffer: ArrayBuffer, fileName = 'exam.pdf'): 
 
   // 2. Normalize text, convert MathType/LaTeX remnants and Unicode math symbols
   let normalizedText = text
-    .replace(/(\w+)-\s*\n\s*(\w+)/g, '$1$2') // rejoin hyphenated words
     .replace(/\r\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n');
 
   normalizedText = extractMathTypeLatexFromText(normalizedText);
-  normalizedText = replaceUnicodeMathSymbols(normalizedText);
+  normalizedText = replaceUnicodeMathSymbolsOutsideMath(normalizedText);
 
   // 3. Extract question blocks matching "Câu x.", "Câu x:", "câu x.", "câu x:", "Bài x.", "Bài x:", "bài x.", "bài x:"
-  const questionBlocks = splitTextIntoQuestionBlocks(normalizedText);
+  const prepared = prepareExamText(normalizedText);
+  warnings.push(...prepared.warnings);
+  const questionBlocks = splitTextIntoQuestionBlocks(prepared.body);
 
-  if (questionBlocks.length === 1 && questionBlocks[0].qNum === 1 && questionBlocks[0].rawText === normalizedText.trim()) {
+  if (questionBlocks.length === 1 && questionBlocks[0].qNum === 1 && questionBlocks[0].rawText === prepared.body.trim()) {
     warnings.push('Không nhận diện được từ khóa "Câu 1.", "Câu 1:", "Bài 1.", "Bài 1:" trong tệp PDF. Đã gom toàn bộ văn bản để giáo viên kiểm duyệt.');
   }
 
   // 4. Parse blocks into structured Question objects
-  questions = parseQuestionBlocksToQuestions(questionBlocks);
+  questions = parseQuestionBlocksToQuestions(questionBlocks, prepared.answerKeyMap);
+  warnings.push('Công thức lấy từ lớp chữ của PDF thường bị vỡ (mũ, phân số, căn). Nếu thấy sai, bấm "Bóc tách lại bằng AI".');
 
   const validCount = questions.filter(q => q.validationStatus === 'VALID').length;
   const needsReviewCount = questions.length - validCount;
