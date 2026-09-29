@@ -9,7 +9,8 @@
 
 import { Question, ParseResult } from '../../types/question';
 import { splitTextIntoQuestionBlocks, parseQuestionBlocksToQuestions } from './questionSplitter';
-import { extractMathTypeLatexFromText, replaceUnicodeMathSymbols } from './mathtypeConverter';
+import { prepareExamText } from './answerKey';
+import { extractMathTypeLatexFromText, replaceUnicodeMathSymbolsOutsideMath } from './mathtypeConverter';
 
 export function parseTextExam(rawContent: string, fileName = 'exam.txt'): ParseResult {
   const warnings: string[] = [];
@@ -29,40 +30,13 @@ export function parseTextExam(rawContent: string, fileName = 'exam.txt'): ParseR
 
   // 1. Process MathType comments, MathML tags, and symbols
   let text = extractMathTypeLatexFromText(rawContent);
-  text = replaceUnicodeMathSymbols(text);
+  text = replaceUnicodeMathSymbolsOutsideMath(text);
 
-  // 2. Check for separate Answer Key section (BẢNG ĐÁP ÁN, ĐÁP ÁN TRẮC NGHIỆM)
-  const answerKeyMap = new Map<number, string>();
-  const answerKeyHeaderRegex = /(?:BẢNG\s+ĐÁP\s+ÁN|ĐÁP\s+ÁN\s+TRẮC\s+NGHIỆM|BẢNG\s+TRẢ\s+LỜI)/i;
-  const headerMatch = text.match(answerKeyHeaderRegex);
-
-  let parsingBody = text;
-
-  if (headerMatch && headerMatch.index !== undefined) {
-    const afterHeader = text.slice(headerMatch.index + headerMatch[0].length);
-    // Check if there is a question start after this header
-    const nextQuestionMatch = afterHeader.match(/(?:^|\n)\s*(?:Câu|câu|Bài|bài)\s*([0-9]+|[IVXLCDMivxlcdm]+)[\.:\-\s]/i);
-
-    let keySection = '';
-    if (nextQuestionMatch && nextQuestionMatch.index !== undefined) {
-      keySection = afterHeader.slice(0, nextQuestionMatch.index);
-      parsingBody = text.slice(0, headerMatch.index) + '\n' + afterHeader.slice(nextQuestionMatch.index);
-    } else {
-      keySection = afterHeader;
-      parsingBody = text.slice(0, headerMatch.index);
-    }
-
-    const pairRegex = /(\d+)\s*[\.\-:\s]\s*([A-D])/gi;
-    let keyPairMatch: RegExpExecArray | null;
-    while ((keyPairMatch = pairRegex.exec(keySection)) !== null) {
-      const qIndex = parseInt(keyPairMatch[1], 10);
-      const ansChar = keyPairMatch[2].toUpperCase();
-      answerKeyMap.set(qIndex, ansChar);
-    }
-    if (answerKeyMap.size > 0) {
-      warnings.push(`Đã tìm thấy bảng đáp án với ${answerKeyMap.size} đáp án.`);
-    }
-  }
+  // 2. Tách bảng đáp án + phần lời giải cuối đề
+  const prepared = prepareExamText(text);
+  const answerKeyMap = prepared.answerKeyMap;
+  const parsingBody = prepared.body;
+  warnings.push(...prepared.warnings);
 
   // 3. Split by Câu x., Câu x:, Bài x., Bài x:
   const blocks = splitTextIntoQuestionBlocks(parsingBody);

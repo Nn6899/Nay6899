@@ -43,6 +43,7 @@ import { StudentExamPreview } from '../editor/StudentExamPreview';
 import { PublishValidationModal } from '../editor/PublishValidationModal';
 import { validateExamForPublish } from '../../services/examValidator';
 import { LatexRenderer } from '../common/LatexRenderer';
+import { TestResultsPanel } from './TestResultsPanel';
 
 interface TestDetailViewProps {
   test: QuizTest;
@@ -1245,50 +1246,7 @@ export const TestDetailView: React.FC<TestDetailViewProps> = ({
       {/* Tab 4: Kết Quả (Placeholder có cấu trúc chuyên nghiệp, KHÔNG tạo dữ liệu giả) */}
       {activeTab === 'results' && (
         <div className="space-y-4">
-          <div className="bg-white p-6 rounded-2xl border border-slate-200">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-bold text-slate-900">Danh Sách Bài Nộp Thí Sinh</h3>
-                <p className="text-xs text-slate-500">
-                  Ghi nhận tự động điểm số và thời gian nộp bài của học sinh
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500">Tổng số lượt:</span>
-                <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-800 text-xs font-bold">
-                  {test.totalSubmissions || 0}
-                </span>
-              </div>
-            </div>
-
-            {/* Bảng kết quả có cấu trúc đầy đủ, hiển thị trạng thái rỗng chuẩn */}
-            <div className="overflow-x-auto mt-4">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase bg-slate-50/70">
-                    <th className="py-3 px-4">STT</th>
-                    <th className="py-3 px-4">Họ Và Tên</th>
-                    <th className="py-3 px-4">Mã Học Sinh / Email</th>
-                    <th className="py-3 px-4">Điểm Số</th>
-                    <th className="py-3 px-4">Thời Gian Nộp</th>
-                    <th className="py-3 px-4 text-right">Chi Tiết</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td colSpan={6} className="py-12 text-center text-slate-400">
-                      <Users className="w-8 h-8 mx-auto mb-2 text-slate-300" />
-                      <p className="text-sm font-medium text-slate-600">Chưa có lượt nộp bài nào</p>
-                      <p className="text-xs text-slate-400 mt-1">
-                        Khi học sinh tham gia và nộp bài thi qua mã {test.publicCode}, danh sách sẽ
-                        hiển thị tại đây theo thời gian thực.
-                      </p>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <TestResultsPanel test={test} />
         </div>
       )}
 

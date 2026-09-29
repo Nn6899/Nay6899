@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { Question, ParseResult } from '../../types/question';
 import { importExamFromFile, parseTextExam } from '../../services/import';
-import { extractQuestionsWithAi } from '../../services/document-ai/question-extractor';
+import { extractQuestionsWithAi, extractQuestionsWithAiFromFile } from '../../services/document-ai/question-extractor';
 import { questionService } from '../../services/questionService';
 import { QuestionEditModal } from './QuestionEditModal';
 import { LatexRenderer } from '../common/LatexRenderer';
@@ -118,11 +118,34 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
     setProgressPercent(10);
     setProgressMessage('Đang khởi tạo tiến trình đọc tệp và phân tích công thức...');
 
+    const onProgress = (msg: string, pct: number) => {
+      setProgressMessage(msg);
+      setProgressPercent(pct);
+    };
+
     try {
-      const result = await importExamFromFile(file, (msg, pct) => {
-        setProgressMessage(msg);
-        setProgressPercent(pct);
-      });
+      // Ảnh chụp đề: chỉ AI mới đọc được
+      if (/\.(png|jpe?g|webp)$/i.test(file.name)) {
+        const aiResult = await extractQuestionsWithAiFromFile(file, onProgress);
+        setParseResult(aiResult);
+        setQuestions(aiResult.questions);
+        setCurrentStep('REVIEW');
+        if (aiResult.questions.length === 0) setErrorMessage(aiResult.warnings.join(' '));
+        return;
+      }
+
+      let result = await importExamFromFile(file, onProgress);
+
+      // PDF scan (không có lớp chữ): tự động chuyển sang AI OCR
+      if (result.requiresOcrOrAi) {
+        onProgress('PDF là bản scan/ảnh — đang chuyển sang AI để nhận dạng chữ và công thức...', 20);
+        const aiResult = await extractQuestionsWithAiFromFile(file, onProgress);
+        if (aiResult.questions.length > 0) {
+          result = { ...aiResult, fileType: 'pdf', warnings: ['Đã nhận dạng bản scan bằng AI (OCR). Hãy kiểm tra lại công thức và đáp án.', ...aiResult.warnings] };
+        } else {
+          result = { ...result, warnings: [...result.warnings, ...aiResult.warnings] };
+        }
+      }
 
       setParseResult(result);
       setQuestions(result.questions);
@@ -172,25 +195,17 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
     setErrorMessage(null);
 
     try {
-      let content = parseResult?.rawTextSample || '';
-      if (!content && selectedFile) {
-        const textDecoder = new TextDecoder('utf-8');
-        const buf = await selectedFile.arrayBuffer();
-        content = textDecoder.decode(buf).slice(0, 10000);
-      } else if (!content && pastedText) {
-        content = pastedText.slice(0, 10000);
-      }
-
-      const aiRes = await extractQuestionsWithAi(content, {
-        fileName: selectedFile?.name || 'pasted_exam.txt',
-      });
+      // Gửi TOÀN BỘ đề cho AI (bản cũ chỉ gửi 300 ký tự đầu nên AI không tách được câu)
+      const aiRes = selectedFile && inputMode === 'FILE'
+        ? await extractQuestionsWithAiFromFile(selectedFile)
+        : await extractQuestionsWithAi(pastedText, { fileName: 'pasted_exam.txt' });
 
       if (aiRes.questions.length > 0) {
         setQuestions(aiRes.questions);
         setParseResult(prev => ({
           ...prev!,
           questions: aiRes.questions,
-          warnings: [...(prev?.warnings || []), 'Đã hoàn tất trích xuất nâng cao bằng mô hình AI.'],
+          warnings: ['Đã bóc tách lại bằng AI. Hãy kiểm tra công thức và đáp án trước khi lưu.', ...aiRes.warnings],
           requiresOcrOrAi: false,
           validCount: aiRes.validCount,
           needsReviewCount: aiRes.needsReviewCount,
@@ -413,7 +428,7 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".docx,.tex,.txt,.pdf"
+                    accept=".docx,.tex,.txt,.pdf,.png,.jpg,.jpeg,.webp"
                     onChange={handleFileInputChange}
                     className="hidden"
                   />
@@ -426,7 +441,7 @@ export const ExamImportModal: React.FC<ExamImportModalProps> = ({
                     Kéo thả file đề thi vào đây, hoặc <span className="text-blue-600 hover:underline">duyệt tệp từ máy tính</span>
                   </h3>
                   <p className="text-xs text-slate-500 mt-1.5 max-w-md">
-                    Hỗ trợ Word (.docx) chứa công thức MathType/OMML, LaTeX (.tex), Văn bản (.txt), và PDF (.pdf). Tự động chuyển đổi công thức sang mã LaTeX chuẩn.
+                    Hỗ trợ Word (.docx) chứa công thức MathType/Equation, LaTeX (.tex), Văn bản (.txt), PDF (.pdf, kể cả bản scan) và ảnh chụp đề (.jpg/.png). Công thức được chuyển sang LaTeX; bản scan/ảnh được AI nhận dạng.
                   </p>
 
                   {/* File type badges */}
@@ -582,6 +597,21 @@ Bài 3. Điền giá trị cực tiểu của hàm số:
                 </div>
               </div>
 
+              {/* AI re-extraction: luôn hiển thị để giáo viên dùng khi tách câu/công thức chưa đúng */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 bg-purple-50/70 border border-purple-200 rounded-xl">
+                <p className="text-xs text-purple-900">
+                  Tách câu hoặc công thức chưa đúng (thường gặp với PDF)? Cho AI đọc lại toàn bộ đề — AI tự OCR bản scan, nhận dạng công thức và tìm đáp án.
+                </p>
+                <button
+                  onClick={handleAiExtraction}
+                  disabled={isAiProcessing}
+                  className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold shadow-xs disabled:opacity-50"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{isAiProcessing ? 'AI đang đọc đề (30-90 giây)...' : 'Bóc tách lại bằng AI'}</span>
+                </button>
+              </div>
+
               {/* Warnings List & MathType Notice */}
               {parseResult?.warnings && parseResult.warnings.length > 0 && (
                 <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-xl space-y-2">
@@ -591,16 +621,6 @@ Bài 3. Điền giá trị cực tiểu của hàm số:
                       <span>Thông tin bóc tách & chuyển đổi công thức:</span>
                     </div>
 
-                    {parseResult.requiresOcrOrAi && (
-                      <button
-                        onClick={handleAiExtraction}
-                        disabled={isAiProcessing}
-                        className="inline-flex items-center gap-1.5 px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold shadow-xs disabled:opacity-50"
-                      >
-                        <Sparkles className="w-3.5 h-3.5" />
-                        <span>{isAiProcessing ? 'Đang trích xuất AI...' : 'Nhận diện nâng cao bằng AI'}</span>
-                      </button>
-                    )}
                   </div>
                   <ul className="list-disc list-inside text-xs text-blue-800 space-y-1 pl-1">
                     {parseResult.warnings.map((w, idx) => (
@@ -741,6 +761,16 @@ Bài 3. Điền giá trị cực tiểu của hàm số:
                           </div>
                         ) : (
                           <LatexRenderer content={q.content || '[Chưa có nội dung câu hỏi]'} />
+                        )}
+                        {q.images && q.images.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {q.images.map((src, imgIdx) => (
+                              <figure key={imgIdx} className="text-center">
+                                <img src={src} alt={`Hình ${imgIdx + 1}`} className="max-h-40 rounded border border-slate-200 bg-white" />
+                                {q.images!.length > 1 && <figcaption className="text-[10px] text-slate-500">Hình {imgIdx + 1}</figcaption>}
+                              </figure>
+                            ))}
+                          </div>
                         )}
                       </div>
 
