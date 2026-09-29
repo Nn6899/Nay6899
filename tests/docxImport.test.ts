@@ -170,3 +170,34 @@ describe('PDF text layout', () => {
     expect(res.questions[0].options).toEqual(['1', '2', '3', '4']);
   });
 });
+
+import { parseFirebaseConfigText } from '../src/firebase/parseConfig';
+
+describe('Firebase config in one variable', () => {
+  it('reads the block copied from Firebase Console (JS style, straight quotes)', () => {
+    const cfg = parseFirebaseConfigText(`
+      // Your web app's Firebase configuration
+      const firebaseConfig = {
+        apiKey: "AIzaSyABC-123",
+        authDomain: "lop12.firebaseapp.com",
+        projectId: "lop12",
+        storageBucket: "lop12.firebasestorage.app",
+        messagingSenderId: "1234567890",
+        appId: "1:1234567890:web:abcdef",
+      };`);
+    expect(cfg.apiKey).toBe('AIzaSyABC-123');
+    expect(cfg.projectId).toBe('lop12');
+    expect(cfg.appId).toBe('1:1234567890:web:abcdef');
+    expect(cfg.authDomain).toBe('lop12.firebaseapp.com');
+  });
+
+  it('reads JSON and curly quotes pasted from chat apps', () => {
+    expect(parseFirebaseConfigText('{"apiKey":"K1","projectId":"P1"}')).toMatchObject({ apiKey: 'K1', projectId: 'P1' });
+    expect(parseFirebaseConfigText('apiKey: “K2”,\nprojectId: “P2”')).toMatchObject({ apiKey: 'K2', projectId: 'P2' });
+  });
+
+  it('returns nothing for empty or unrelated text', () => {
+    expect(parseFirebaseConfigText(undefined)).toEqual({});
+    expect(parseFirebaseConfigText('hello')).toEqual({});
+  });
+});

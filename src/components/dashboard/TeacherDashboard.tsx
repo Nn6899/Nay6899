@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { ConnectionStatusCard } from './ConnectionStatusCard';
+import { SetupStatusBanner } from './SetupStatusBanner';
 import { LatexRenderer } from '../common/LatexRenderer';
 import { CreateTestModal } from './CreateTestModal';
 import { TestDetailView } from './TestDetailView';
@@ -229,6 +230,8 @@ export const TeacherDashboard: React.FC = () => {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      <SetupStatusBanner />
+
       {/* Welcome Banner */}
       <div className="bg-white rounded-3xl border border-slate-200 p-6 sm:p-8 shadow-xs relative overflow-hidden">
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">

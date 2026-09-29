@@ -36,7 +36,9 @@ Giao diện học sinh **làm từng câu, bấm Câu tiếp theo** đã có s�
 
 ---
 
-## 2. Bật AI (OCR PDF scan, ảnh chụp đề, bóc tách lại) – miễn phí
+## 2. Bật AI (OCR PDF scan, ảnh chụp đề, bóc tách lại) – miễn phí, **có thể làm sau**
+
+Word, PDF có chữ, LaTeX và TXT nhập được bình thường mà không cần AI. Chỉ làm bước này khi cần nhập PDF scan hoặc ảnh chụp đề.
 
 1. Vào <https://aistudio.google.com/apikey> → **Create API key** → sao chép.
 2. Vào <https://vercel.com> → chọn project **nay6899** → **Settings → Environment Variables** → thêm:
@@ -57,21 +59,15 @@ Hiện site chưa có Firebase nên **đề và bài làm chỉ lưu trong trìn
 3. **Build → Firestore Database → Create database** → chọn vị trí `asia-southeast1` → **Production mode**.
 4. Trong Firestore → tab **Rules** → xoá hết, dán **toàn bộ nội dung tệp `firestore.rules`** (bản mới) → **Publish**.
 5. **Project settings (bánh răng) → General → Your apps → biểu tượng `</>` (Web)** → đặt tên → **Register app** → sẽ thấy đoạn `firebaseConfig = { apiKey: ..., authDomain: ..., ... }`.
-6. Trên Vercel → **Settings → Environment Variables**, thêm 6 biến, lấy giá trị tương ứng trong `firebaseConfig`:
+6. Trên Vercel → **Settings → Environment Variables**, thêm **1 biến**:
+   - **Name:** `VITE_FIREBASE_CONFIG`
+   - **Value:** dán **nguyên khối** `firebaseConfig` vừa thấy ở bước 5 (từ `const firebaseConfig = {` đến `};`, dán cả dòng chú thích cũng được). Site tự đọc `apiKey`, `projectId`... trong đó.
 
-   | Tên biến trên Vercel | Lấy từ |
-   |---|---|
-   | `VITE_FIREBASE_API_KEY` | `apiKey` |
-   | `VITE_FIREBASE_AUTH_DOMAIN` | `authDomain` |
-   | `VITE_FIREBASE_PROJECT_ID` | `projectId` |
-   | `VITE_FIREBASE_STORAGE_BUCKET` | `storageBucket` |
-   | `VITE_FIREBASE_MESSAGING_SENDER_ID` | `messagingSenderId` |
-   | `VITE_FIREBASE_APP_ID` | `appId` |
-
+   (Cách cũ dùng 6 biến `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_PROJECT_ID`... vẫn hoạt động nếu thầy thích.)
 7. **Redeploy** (như bước 2.3).
-8. Mở site → **Đăng ký tài khoản giáo viên mới** (tài khoản demo `giaovien@demo.edu.vn` chỉ dùng khi chưa có Firebase). Đề tạo trước khi nối Firebase nằm trong trình duyệt cũ, cần nhập lại.
+8. Mở site: đầu trang giáo viên có thẻ **tình trạng** báo còn thiếu gì; khi hết cảnh báo là xong. **Đăng ký tài khoản giáo viên mới** (tài khoản demo `giaovien@demo.edu.vn` chỉ dùng khi chưa có Firebase). Đề tạo trước khi nối Firebase nằm trong trình duyệt cũ, cần nhập lại.
 
-Không cần bật Firebase **Storage** (bản này không dùng; Storage hiện yêu cầu gói trả phí).
+Không cần bật Firebase **Storage** (bản này không dùng đến).
 
 ---
 
